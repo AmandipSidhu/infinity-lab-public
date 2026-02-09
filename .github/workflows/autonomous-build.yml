@@ -41,7 +41,6 @@ jobs:
           set -e
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # ARCHITECTURE.md specifies quantconnect-mcp for HTTP transport server
           pip install quantconnect-mcp
 
       - name: 4️⃣ Slack: Build started
@@ -61,9 +60,9 @@ jobs:
         run: |
           set -e
           python scripts/parse_issue.py \
-            --issue-body '${{ github.event.issue.body }}' \
+            --issue-body "${{ github.event.issue.body }}" \
             --out "${SPEC_PATH}"
-          echo "Parsed spec:" 
+          echo "Parsed spec:"
           cat "${SPEC_PATH}"
 
       - name: 6️⃣ Slack: Spec parsed
