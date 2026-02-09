@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: AmandipSidhu/infinity-lab-library
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          token: ${{ secrets.INFINITY_PUBLIC_TO_PRIVATE_ACCESS }}
           path: infinity-lab-library
       
       - name: 2️⃣ Setup Python
@@ -99,7 +99,7 @@ jobs:
       - name: 8️⃣ Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          token: ${{ secrets.INFINITY_PUBLIC_TO_PRIVATE_ACCESS }}
           commit-message: "feat: Add strategy from issue #${{ github.event.client_payload.issue_number }}"
           branch: strategy/${{ github.event.client_payload.issue_number }}
           title: "Strategy: ${{ github.event.client_payload.issue_title }}"
