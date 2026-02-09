@@ -52,15 +52,23 @@ jobs:
           
           # Wait for server to be ready
           echo "⏳ Waiting for MCP server to start..."
-          sleep 10
+          sleep 15
+          
+          # Debug: Show all containers
+          echo "📋 All containers:"
+          docker ps -a
+          
+          # Debug: Show container logs regardless of status
+          echo "📜 Container logs:"
+          docker logs qc-mcp-server 2>&1 || echo "No logs available"
           
           # Verify server is running
           if docker ps | grep -q qc-mcp-server; then
             echo "✅ QC MCP server is running"
-            docker ps | grep qc-mcp-server
           else
             echo "❌ QC MCP server failed to start"
-            docker logs qc-mcp-server
+            echo "🔍 Container inspect:"
+            docker inspect qc-mcp-server
             exit 1
           fi
       
