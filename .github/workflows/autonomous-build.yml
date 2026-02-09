@@ -1,0 +1,72 @@
+name: Autonomous Strategy Build
+
+on:
+  issues:
+    types: [opened, labeled]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'vm-command')
+    
+    steps:
+      - name: Notify build start
+        run: |
+          echo "Build triggered by issue #${{ github.event.issue.number }}"
+          echo "Issue title: ${{ github.event.issue.title }}"
+      
+      # Checkout private repo with ALL code/scripts/specs
+      - name: Checkout private repo
+        uses: actions/checkout@v4
+        with:
+          repository: amandipsidhu-2025/infinity-lab-library
+          token: ${{ secrets.INFINITY_PUBLIC_TO_PRIVATE_ACCESS }}
+          path: private
+      
+      # Setup Python environment
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      # Install dependencies from private repo
+      - name: Install dependencies
+        working-directory: private
+        run: |
+          pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      
+      # Run build orchestrator from private repo
+      - name: Run autonomous build
+        working-directory: private
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          python scripts/aider_build_production.py \
+            --issue-body "$ISSUE_BODY" \
+            --issue-number "$ISSUE_NUMBER"
+      
+      # Commit results back to private repo
+      - name: Push results to private repo
+        working-directory: private
+        run: |
+          git config user.name "Autonomous Builder"
+          git config user.email "builder@infinity-lab"
+          git add outputs/
+          git add strategies/
+          git commit -m "build: ${{ github.event.issue.title }} (#${{ github.event.issue.number }})" || echo "No changes to commit"
+          git push
+      
+      - name: Notify build complete
+        if: success()
+        run: echo "Build completed successfully"
+      
+      - name: Notify build failure
+        if: failure()
+        run: echo "Build failed - check logs"
