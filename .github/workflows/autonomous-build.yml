@@ -30,7 +30,6 @@ jobs:
         working-directory: infinity-lab-library
         run: |
           pip install -r requirements.txt
-          pip install quantconnect-mcp
       
       - name: 4️⃣ Parse Issue Spec
         id: parse
@@ -41,36 +40,30 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: 5️⃣ Start QC MCP Server (HTTP Transport)
+      - name: 5️⃣ Start QC MCP Server (Docker)
         run: |
-          echo "🚀 Starting QuantConnect MCP server with HTTP transport..."
+          echo "🚀 Starting official QuantConnect MCP server via Docker..."
           
-          nohup python -m quantconnect_mcp.main \
-            --transport streamable-http \
-            --port 8000 \
-            --host 0.0.0.0 \
-            > /tmp/mcp-server.log 2>&1 &
-          
-          MCP_PID=$!
-          echo "MCP_PID=$MCP_PID" >> $GITHUB_ENV
-          echo "📝 MCP server started with PID: $MCP_PID"
+          docker run -d \
+            --name quantconnect-mcp-server \
+            --platform linux/amd64 \
+            -e QUANTCONNECT_USER_ID=${{ secrets.QC_USER_ID }} \
+            -e QUANTCONNECT_API_TOKEN=${{ secrets.QC_API_TOKEN }} \
+            -e AGENT_NAME="GitHub Actions" \
+            -p 8000:8000 \
+            quantconnect/mcp-server
           
           echo "⏳ Waiting for MCP server to start..."
           sleep 10
           
-          if ps -p $MCP_PID > /dev/null; then
-            echo "✅ QC MCP server running (PID: $MCP_PID)"
-            echo "📊 Server logs:"
-            tail -20 /tmp/mcp-server.log
+          if docker ps | grep quantconnect-mcp-server; then
+            echo "✅ QC MCP server running"
+            docker logs quantconnect-mcp-server
           else
             echo "❌ MCP server failed to start"
-            echo "📋 Full logs:"
-            cat /tmp/mcp-server.log
+            docker logs quantconnect-mcp-server
             exit 1
           fi
-        env:
-          QUANTCONNECT_USER_ID: ${{ secrets.QC_USER_ID }}
-          QUANTCONNECT_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
       
       - name: 6️⃣ Discover QC MCP Tools
         working-directory: infinity-lab-library
@@ -132,10 +125,6 @@ jobs:
         if: always()
         run: |
           echo "🧹 Cleaning up MCP server..."
-          if [ ! -z "$MCP_PID" ]; then
-            kill $MCP_PID 2>/dev/null || true
-            echo "✅ MCP server stopped (PID: $MCP_PID)"
-          fi
-          
-          echo "📋 Final MCP server logs:"
-          tail -50 /tmp/mcp-server.log || true
+          docker stop quantconnect-mcp-server || true
+          docker rm quantconnect-mcp-server || true
+          echo "✅ Cleanup complete"
