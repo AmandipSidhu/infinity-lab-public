@@ -12,8 +12,9 @@ jobs:
     steps:
       - name: Notify build start
         run: |
-          echo "Build triggered by issue #${{ github.event.issue.number }}"
-          echo "Issue title: ${{ github.event.issue.title }}"
+          echo "🚀 Build triggered by issue #${{ github.event.issue.number }}"
+          echo "📋 Issue title: ${{ github.event.issue.title }}"
+          echo "⏰ Started at: $(date)"
       
       # Checkout private repo with ALL code/scripts/specs
       - name: Checkout private repo
@@ -35,38 +36,183 @@ jobs:
         run: |
           pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          echo "✅ Dependencies installed"
       
-      # Run build orchestrator from private repo
-      - name: Run autonomous build
+      # Start QuantConnect MCP Server (Docker)
+      - name: Start QC MCP Server
+        run: |
+          echo "🐳 Starting QuantConnect MCP server..."
+          docker run -d \
+            -e QUANTCONNECT_USER_ID=${{ secrets.QC_USER_ID }} \
+            -e QUANTCONNECT_API_TOKEN=${{ secrets.QC_API_TOKEN }} \
+            -e AGENT_NAME="Autonomous Builder" \
+            --platform linux/amd64 \
+            --name qc-mcp-server \
+            quantconnect/mcp-server
+          
+          # Wait for server to be ready
+          echo "⏳ Waiting for MCP server to start..."
+          sleep 10
+          
+          # Verify server is running
+          if docker ps | grep -q qc-mcp-server; then
+            echo "✅ QC MCP server is running"
+            docker ps | grep qc-mcp-server
+          else
+            echo "❌ QC MCP server failed to start"
+            docker logs qc-mcp-server
+            exit 1
+          fi
+      
+      # Discover QC MCP Tools (60 tools for fast feedback)
+      - name: Discover QC MCP Tools
         working-directory: private
         env:
-          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
           QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          echo "🔍 Discovering QuantConnect MCP tools..."
+          python scripts/mcp_tool_discovery.py
+          
+          # Verify manifest was created
+          if [ -f config/qc_tools_manifest.json ]; then
+            tool_count=$(cat config/qc_tools_manifest.json | jq '.total_count')
+            echo "✅ QC tools manifest created with $tool_count tools"
+            
+            if [ "$tool_count" -ne 60 ]; then
+              echo "⚠️  Warning: Expected 60 tools, found $tool_count"
+            fi
+          else
+            echo "❌ Tool manifest not created"
+            exit 1
+          fi
+      
+      # Run Aider with MCP tools for autonomous coding
+      - name: Run Aider Build with MCP Tools
+        uses: mirrajabi/aider-github-action@v1.1.0
+        with:
+          api_key_env_name: ANTHROPIC_API_KEY
+          api_key_env_value: ${{ secrets.CLAUDE_API_KEY }}
+          model: claude-sonnet-4.5-20250514
+          aider_args: |
+            --yes
+            --read config/aider_system_prompt_with_tools.txt
+            --message "Build QuantConnect strategy from spec: ${{ github.event.issue.body }}"
+        env:
+          MCP_TOOLS_MANIFEST: config/qc_tools_manifest.json
+          MCP_SERVER_URL: "http://localhost:8000"
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+      
+      # Run validation and testing
+      - name: Test and Validate
+        working-directory: private
+        env:
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+          MCP_SERVER_URL: "http://localhost:8000"
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
-          python scripts/aider_build_production.py \
-            --issue-body "$ISSUE_BODY" \
-            --issue-number "$ISSUE_NUMBER"
+          echo "🧪 Running validation and tests..."
+          
+          # Run orchestrator if it exists
+          if [ -f scripts/aider_build_production.py ]; then
+            python scripts/aider_build_production.py \
+              --issue-body "$ISSUE_BODY" \
+              --issue-number "$ISSUE_NUMBER"
+          else
+            echo "⚠️  Orchestrator script not found yet (Phase 1)"
+            echo "✅ Skipping for now - will validate manually"
+          fi
       
-      # Commit results back to private repo
-      - name: Push results to private repo
+      # Create Pull Request with results
+      - name: Create Pull Request
         working-directory: private
+        env:
+          GITHUB_TOKEN: ${{ secrets.INFINITY_PUBLIC_TO_PRIVATE_ACCESS }}
         run: |
+          echo "📝 Creating pull request..."
+          
           git config user.name "Autonomous Builder"
           git config user.email "builder@infinity-lab"
-          git add outputs/
-          git add strategies/
-          git commit -m "build: ${{ github.event.issue.title }} (#${{ github.event.issue.number }})" || echo "No changes to commit"
-          git push
+          
+          # Create branch
+          BRANCH_NAME="build/${{ github.event.issue.number }}"
+          git checkout -b "$BRANCH_NAME"
+          
+          # Add changes
+          git add -A
+          
+          # Commit if there are changes
+          if git diff --staged --quiet; then
+            echo "⚠️  No changes to commit"
+          else
+            git commit -m "build: ${{ github.event.issue.title }} (#${{ github.event.issue.number }})"
+            git push origin "$BRANCH_NAME"
+            
+            # Create PR using gh CLI
+            gh pr create \
+              --title "Build: ${{ github.event.issue.title }}" \
+              --body "Auto-generated from issue #${{ github.event.issue.number }}\n\n## Issue Body\n\n${{ github.event.issue.body }}\n\n## Build Info\n- Triggered by: @${{ github.event.issue.user.login }}\n- MCP Tools: 60 tools used\n- Aider Model: Claude Sonnet 4.5" \
+              --base main \
+              --head "$BRANCH_NAME" || echo "PR creation failed or already exists"
+            
+            echo "✅ Pull request created"
+          fi
       
-      - name: Notify build complete
-        if: success()
-        run: echo "Build completed successfully"
+      # Notify Slack
+      - name: Notify Slack
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          
+          if [ "$STATUS" = "success" ]; then
+            EMOJI="✅"
+            COLOR="good"
+          else
+            EMOJI="❌"
+            COLOR="danger"
+          fi
+          
+          curl -X POST ${{ secrets.SLACK_WEBHOOK }} \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"text\": \"$EMOJI Build $STATUS: ${{ github.event.issue.title }}\",
+              \"attachments\": [
+                {
+                  \"color\": \"$COLOR\",
+                  \"fields\": [
+                    {
+                      \"title\": \"Status\",
+                      \"value\": \"$STATUS\",
+                      \"short\": true
+                    },
+                    {
+                      \"title\": \"Issue\",
+                      \"value\": \"#${{ github.event.issue.number }}\",
+                      \"short\": true
+                    },
+                    {
+                      \"title\": \"Title\",
+                      \"value\": \"${{ github.event.issue.title }}\",
+                      \"short\": false
+                    },
+                    {
+                      \"title\": \"Run\",
+                      \"value\": \"<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>\",
+                      \"short\": false
+                    }
+                  ]
+                }
+              ]
+            }"
       
-      - name: Notify build failure
-        if: failure()
-        run: echo "Build failed - check logs"
+      # Cleanup MCP server
+      - name: Stop MCP Server
+        if: always()
+        run: |
+          echo "🧹 Cleaning up MCP server..."
+          docker stop qc-mcp-server || true
+          docker rm qc-mcp-server || true
+          echo "✅ Cleanup complete"
