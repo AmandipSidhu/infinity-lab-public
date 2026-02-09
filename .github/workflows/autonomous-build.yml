@@ -38,37 +38,38 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           echo "✅ Dependencies installed"
       
-      # Start QuantConnect MCP Server (Docker)
+      # Start QuantConnect MCP Server (STDIO Transport)
       - name: Start QC MCP Server
         run: |
-          echo "🐳 Starting QuantConnect MCP server..."
-          docker run -d \
+          echo "🐳 Starting QuantConnect MCP server in background..."
+          
+          # MCP uses STDIO transport - needs interactive mode, not daemon
+          docker run -i --rm \
             -e QUANTCONNECT_USER_ID=${{ secrets.QC_USER_ID }} \
             -e QUANTCONNECT_API_TOKEN=${{ secrets.QC_API_TOKEN }} \
             -e AGENT_NAME="Autonomous Builder" \
             --platform linux/amd64 \
             --name qc-mcp-server \
-            quantconnect/mcp-server
+            quantconnect/mcp-server \
+            > /tmp/mcp-server.log 2>&1 &
           
-          # Wait for server to be ready
-          echo "⏳ Waiting for MCP server to start..."
-          sleep 15
+          MCP_PID=$!
+          echo "MCP_PID=$MCP_PID" >> $GITHUB_ENV
           
-          # Debug: Show all containers
-          echo "📋 All containers:"
-          docker ps -a
+          echo "⏳ Waiting for MCP server to initialize..."
+          sleep 5
           
-          # Debug: Show container logs regardless of status
-          echo "📜 Container logs:"
-          docker logs qc-mcp-server 2>&1 || echo "No logs available"
-          
-          # Verify server is running
-          if docker ps | grep -q qc-mcp-server; then
-            echo "✅ QC MCP server is running"
+          # Verify process is still running
+          if ps -p $MCP_PID > /dev/null 2>&1; then
+            echo "✅ QC MCP server running (PID: $MCP_PID)"
+            
+            # Show initial logs
+            echo "📜 Initial logs:"
+            head -20 /tmp/mcp-server.log || echo "No logs yet"
           else
-            echo "❌ QC MCP server failed to start"
-            echo "🔍 Container inspect:"
-            docker inspect qc-mcp-server
+            echo "❌ MCP server process died"
+            echo "📜 Full logs:"
+            cat /tmp/mcp-server.log
             exit 1
           fi
       
@@ -221,6 +222,19 @@ jobs:
         if: always()
         run: |
           echo "🧹 Cleaning up MCP server..."
-          docker stop qc-mcp-server || true
-          docker rm qc-mcp-server || true
+          
+          # Kill process if still running
+          if [ ! -z "${{ env.MCP_PID }}" ]; then
+            kill ${{ env.MCP_PID }} 2>/dev/null || true
+            echo "Stopped MCP server (PID: ${{ env.MCP_PID }})"
+          fi
+          
+          # Stop docker container
+          docker stop qc-mcp-server 2>/dev/null || true
+          docker rm qc-mcp-server 2>/dev/null || true
+          
+          # Show final logs
+          echo "📜 Final MCP logs:"
+          tail -50 /tmp/mcp-server.log || echo "No logs available"
+          
           echo "✅ Cleanup complete"
