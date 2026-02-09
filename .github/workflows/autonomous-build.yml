@@ -4,21 +4,21 @@ on:
   repository_dispatch:
     types: [build-strategy]
 
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
 jobs:
   autonomous-build:
     runs-on: ubuntu-latest
-    
-    permissions:
-      issues: write
-      contents: write
-      pull-requests: write
     
     steps:
       - name: 1️⃣ Checkout Private Repo (Scripts)
         uses: actions/checkout@v4
         with:
           repository: AmandipSidhu/infinity-lab-library
-          token: ${{ secrets.PAT_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           path: infinity-lab-library
       
       - name: 2️⃣ Setup Python
@@ -99,7 +99,7 @@ jobs:
       - name: 8️⃣ Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.PAT_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "feat: Add strategy from issue #${{ github.event.client_payload.issue_number }}"
           branch: strategy/${{ github.event.client_payload.issue_number }}
           title: "Strategy: ${{ github.event.client_payload.issue_title }}"
