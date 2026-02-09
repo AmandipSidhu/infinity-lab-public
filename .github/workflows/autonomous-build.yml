@@ -1,240 +1,147 @@
-name: Autonomous Strategy Build
+name: Autonomous Strategy Builder
 
 on:
   issues:
     types: [opened, labeled]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  autonomous-build:
     if: contains(github.event.issue.labels.*.name, 'vm-command')
+    runs-on: ubuntu-latest
+    
+    permissions:
+      issues: write
+      contents: write
+      pull-requests: write
     
     steps:
-      - name: Notify build start
-        run: |
-          echo "🚀 Build triggered by issue #${{ github.event.issue.number }}"
-          echo "📋 Issue title: ${{ github.event.issue.title }}"
-          echo "⏰ Started at: $(date)"
-      
-      # Checkout private repo with ALL code/scripts/specs
-      - name: Checkout private repo
+      - name: 1️⃣ Checkout Private Repo (Scripts)
         uses: actions/checkout@v4
         with:
           repository: AmandipSidhu/infinity-lab-library
-          token: ${{ secrets.INFINITY_PUBLIC_TO_PRIVATE_ACCESS }}
-          path: private
+          token: ${{ secrets.PAT_TOKEN }}
+          path: infinity-lab-library
       
-      # Setup Python environment
-      - name: Setup Python
+      - name: 2️⃣ Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
-      # Install dependencies from private repo
-      - name: Install dependencies
-        working-directory: private
+      - name: 3️⃣ Install Dependencies
         run: |
-          pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          echo "✅ Dependencies installed"
+          cd infinity-lab-library
+          pip install -r requirements.txt
+          pip install quantconnect-mcp  # Third-party MCP with HTTP support
       
-      # Start QuantConnect MCP Server (STDIO Transport)
-      - name: Start QC MCP Server
+      - name: 4️⃣ Parse Issue Spec
+        id: parse
         run: |
-          echo "🐳 Starting QuantConnect MCP server in background..."
+          cd infinity-lab-library
+          python scripts/parse_issue.py "${{ github.event.issue.body }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: 5️⃣ Start QC MCP Server (HTTP Transport)
+        run: |
+          echo "🚀 Starting QuantConnect MCP server with HTTP transport..."
           
-          # MCP uses STDIO transport - needs interactive mode, not daemon
-          docker run -i --rm \
-            -e QUANTCONNECT_USER_ID=${{ secrets.QC_USER_ID }} \
-            -e QUANTCONNECT_API_TOKEN=${{ secrets.QC_API_TOKEN }} \
-            -e AGENT_NAME="Autonomous Builder" \
-            --platform linux/amd64 \
-            --name qc-mcp-server \
-            quantconnect/mcp-server \
+          # Start MCP server with streamable-http transport
+          nohup python -m quantconnect_mcp.main \
+            --transport streamable-http \
+            --port 8000 \
+            --host 0.0.0.0 \
             > /tmp/mcp-server.log 2>&1 &
           
           MCP_PID=$!
           echo "MCP_PID=$MCP_PID" >> $GITHUB_ENV
+          echo "📝 MCP server started with PID: $MCP_PID"
           
-          echo "⏳ Waiting for MCP server to initialize..."
-          sleep 5
+          # Wait for server to be ready
+          echo "⏳ Waiting for MCP server to start..."
+          sleep 10
           
-          # Verify process is still running
-          if ps -p $MCP_PID > /dev/null 2>&1; then
+          # Health check
+          if ps -p $MCP_PID > /dev/null; then
             echo "✅ QC MCP server running (PID: $MCP_PID)"
-            
-            # Show initial logs
-            echo "📜 Initial logs:"
-            head -20 /tmp/mcp-server.log || echo "No logs yet"
+            echo "📊 Server logs:"
+            tail -20 /tmp/mcp-server.log
           else
-            echo "❌ MCP server process died"
-            echo "📜 Full logs:"
+            echo "❌ MCP server failed to start"
+            echo "📋 Full logs:"
             cat /tmp/mcp-server.log
             exit 1
           fi
-      
-      # Discover QC MCP Tools (60 tools for fast feedback)
-      - name: Discover QC MCP Tools
-        working-directory: private
         env:
-          QC_USER_ID: ${{ secrets.QC_USER_ID }}
-          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+          QUANTCONNECT_USER_ID: ${{ secrets.QC_USER_ID }}
+          QUANTCONNECT_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+      
+      - name: 6️⃣ Discover QC MCP Tools
         run: |
-          echo "🔍 Discovering QuantConnect MCP tools..."
+          cd infinity-lab-library
           python scripts/mcp_tool_discovery.py
-          
-          # Verify manifest was created
-          if [ -f config/qc_tools_manifest.json ]; then
-            tool_count=$(cat config/qc_tools_manifest.json | jq '.total_count')
-            echo "✅ QC tools manifest created with $tool_count tools"
-            
-            if [ "$tool_count" -ne 60 ]; then
-              echo "⚠️  Warning: Expected 60 tools, found $tool_count"
-            fi
-          else
-            echo "❌ Tool manifest not created"
-            exit 1
-          fi
+        env:
+          MCP_SERVER_URL: "http://localhost:8000"
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
       
-      # Run Aider with MCP tools for autonomous coding
-      - name: Run Aider Build with MCP Tools
-        uses: mirrajabi/aider-github-action@v1.1.0
+      - name: 7️⃣ Autonomous Build with Aider
+        run: |
+          cd infinity-lab-library
+          
+          # Run Aider with MCP tools
+          aider \
+            --model claude-sonnet-4.5 \
+            --yes-always \
+            --no-auto-commits \
+            --message "Build QuantConnect strategy: ${{ steps.parse.outputs.strategy_name }}" \
+            --message "Spec: $(cat /tmp/strategy_spec.yaml)" \
+            --message "Use QC MCP tools at http://localhost:8000" \
+            --system-prompt "$(cat config/aider_system_prompt_with_tools.txt)" \
+            --output /tmp/strategy_output/
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MCP_SERVER_URL: "http://localhost:8000"
+      
+      - name: 8️⃣ Create Pull Request
+        uses: peter-evans/create-pull-request@v6
         with:
-          api_key_env_name: ANTHROPIC_API_KEY
-          api_key_env_value: ${{ secrets.CLAUDE_API_KEY }}
-          model: claude-sonnet-4.5-20250514
-          aider_args: |
-            --yes
-            --read config/aider_system_prompt_with_tools.txt
-            --message "Build QuantConnect strategy from spec: ${{ github.event.issue.body }}"
-        env:
-          MCP_TOOLS_MANIFEST: config/qc_tools_manifest.json
-          MCP_SERVER_URL: "http://localhost:8000"
-          QC_USER_ID: ${{ secrets.QC_USER_ID }}
-          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
-      
-      # Run validation and testing
-      - name: Test and Validate
-        working-directory: private
-        env:
-          QC_USER_ID: ${{ secrets.QC_USER_ID }}
-          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
-          MCP_SERVER_URL: "http://localhost:8000"
-          ISSUE_BODY: ${{ github.event.issue.body }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          echo "🧪 Running validation and tests..."
-          
-          # Run orchestrator if it exists
-          if [ -f scripts/aider_build_production.py ]; then
-            python scripts/aider_build_production.py \
-              --issue-body "$ISSUE_BODY" \
-              --issue-number "$ISSUE_NUMBER"
-          else
-            echo "⚠️  Orchestrator script not found yet (Phase 1)"
-            echo "✅ Skipping for now - will validate manually"
-          fi
-      
-      # Create Pull Request with results
-      - name: Create Pull Request
-        working-directory: private
-        env:
-          GITHUB_TOKEN: ${{ secrets.INFINITY_PUBLIC_TO_PRIVATE_ACCESS }}
-        run: |
-          echo "📝 Creating pull request..."
-          
-          git config user.name "Autonomous Builder"
-          git config user.email "builder@infinity-lab"
-          
-          # Create branch
-          BRANCH_NAME="build/${{ github.event.issue.number }}"
-          git checkout -b "$BRANCH_NAME"
-          
-          # Add changes
-          git add -A
-          
-          # Commit if there are changes
-          if git diff --staged --quiet; then
-            echo "⚠️  No changes to commit"
-          else
-            git commit -m "build: ${{ github.event.issue.title }} (#${{ github.event.issue.number }})"
-            git push origin "$BRANCH_NAME"
+          token: ${{ secrets.PAT_TOKEN }}
+          commit-message: "feat: Add ${{ steps.parse.outputs.strategy_name }} strategy"
+          branch: strategy/${{ github.event.issue.number }}
+          title: "Strategy: ${{ steps.parse.outputs.strategy_name }}"
+          body: |
+            ## Autonomous Build Result
             
-            # Create PR using gh CLI
-            gh pr create \
-              --title "Build: ${{ github.event.issue.title }}" \
-              --body "Auto-generated from issue #${{ github.event.issue.number }}\n\n## Issue Body\n\n${{ github.event.issue.body }}\n\n## Build Info\n- Triggered by: @${{ github.event.issue.user.login }}\n- MCP Tools: 60 tools used\n- Aider Model: Claude Sonnet 4.5" \
-              --base main \
-              --head "$BRANCH_NAME" || echo "PR creation failed or already exists"
+            **Issue:** #${{ github.event.issue.number }}
+            **Strategy:** ${{ steps.parse.outputs.strategy_name }}
             
-            echo "✅ Pull request created"
-          fi
+            This PR was automatically generated by the Infinity Lab autonomous builder.
+            
+            ### Next Steps
+            - Review the generated code
+            - Check backtest results
+            - Approve or request changes
+          labels: auto-generated,needs-review
       
-      # Notify Slack
-      - name: Notify Slack
+      - name: 9️⃣ Notify Slack
         if: always()
         run: |
-          STATUS="${{ job.status }}"
-          
-          if [ "$STATUS" = "success" ]; then
-            EMOJI="✅"
-            COLOR="good"
-          else
-            EMOJI="❌"
-            COLOR="danger"
-          fi
-          
-          curl -X POST ${{ secrets.SLACK_WEBHOOK }} \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"text\": \"$EMOJI Build $STATUS: ${{ github.event.issue.title }}\",
-              \"attachments\": [
-                {
-                  \"color\": \"$COLOR\",
-                  \"fields\": [
-                    {
-                      \"title\": \"Status\",
-                      \"value\": \"$STATUS\",
-                      \"short\": true
-                    },
-                    {
-                      \"title\": \"Issue\",
-                      \"value\": \"#${{ github.event.issue.number }}\",
-                      \"short\": true
-                    },
-                    {
-                      \"title\": \"Title\",
-                      \"value\": \"${{ github.event.issue.title }}\",
-                      \"short\": false
-                    },
-                    {
-                      \"title\": \"Run\",
-                      \"value\": \"<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>\",
-                      \"short\": false
-                    }
-                  ]
-                }
-              ]
-            }"
+          cd infinity-lab-library
+          python scripts/notify_slack.py \
+            --status "${{ job.status }}" \
+            --issue "${{ github.event.issue.number }}" \
+            --pr "${{ steps.cpr.outputs.pull-request-number }}"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       
-      # Cleanup MCP server
-      - name: Stop MCP Server
+      - name: 🧹 Cleanup
         if: always()
         run: |
           echo "🧹 Cleaning up MCP server..."
-          
-          # Kill process if still running
-          if [ ! -z "${{ env.MCP_PID }}" ]; then
-            kill ${{ env.MCP_PID }} 2>/dev/null || true
-            echo "Stopped MCP server (PID: ${{ env.MCP_PID }})"
+          if [ ! -z "$MCP_PID" ]; then
+            kill $MCP_PID 2>/dev/null || true
+            echo "✅ MCP server stopped (PID: $MCP_PID)"
           fi
           
-          # Stop docker container
-          docker stop qc-mcp-server 2>/dev/null || true
-          docker rm qc-mcp-server 2>/dev/null || true
-          
-          # Show final logs
-          echo "📜 Final MCP logs:"
-          tail -50 /tmp/mcp-server.log || echo "No logs available"
-          
-          echo "✅ Cleanup complete"
+          echo "📋 Final MCP server logs:"
+          tail -50 /tmp/mcp-server.log || true
