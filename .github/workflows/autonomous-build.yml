@@ -20,7 +20,7 @@ jobs:
       - name: Checkout private repo
         uses: actions/checkout@v4
         with:
-          repository: amandipsidhu-2025/infinity-lab-library
+          repository: AmandipSidhu/infinity-lab-library
           token: ${{ secrets.INFINITY_PUBLIC_TO_PRIVATE_ACCESS }}
           path: private
       
