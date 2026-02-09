@@ -28,16 +28,15 @@ jobs:
           python-version: '3.11'
       
       - name: 3️⃣ Install Dependencies
+        working-directory: infinity-lab-library
         run: |
-          cd infinity-lab-library
           pip install -r requirements.txt
           pip install quantconnect-mcp  # Third-party MCP with HTTP support
       
       - name: 4️⃣ Parse Issue Spec
         id: parse
-        run: |
-          cd infinity-lab-library
-          python scripts/parse_issue.py "${{ github.event.issue.body }}"
+        working-directory: infinity-lab-library
+        run: python scripts/parse_issue.py "${{ github.event.issue.body }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
@@ -76,18 +75,16 @@ jobs:
           QUANTCONNECT_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
       
       - name: 6️⃣ Discover QC MCP Tools
-        run: |
-          cd infinity-lab-library
-          python scripts/mcp_tool_discovery.py
+        working-directory: infinity-lab-library
+        run: python scripts/mcp_tool_discovery.py
         env:
           MCP_SERVER_URL: "http://localhost:8000"
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
           QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
       
       - name: 7️⃣ Autonomous Build with Aider
+        working-directory: infinity-lab-library
         run: |
-          cd infinity-lab-library
-          
           # Run Aider with MCP tools
           aider \
             --model claude-sonnet-4.5 \
@@ -125,8 +122,8 @@ jobs:
       
       - name: 9️⃣ Notify Slack
         if: always()
+        working-directory: infinity-lab-library
         run: |
-          cd infinity-lab-library
           python scripts/notify_slack.py \
             --status "${{ job.status }}" \
             --issue "${{ github.event.issue.number }}" \
