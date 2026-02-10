@@ -1,7 +1,7 @@
 #!/bin/bash
 # start_all_mcps.sh - Start all 5 MCP servers
 # Part of Infinity 5 Bootstrap v6.1
-# Related: UNI-50, MCP_RESEARCH_FINDINGS.md
+# Related: UNI-50, ARCHITECTURE v2.9 CORRECTED
 
 set -e
 
@@ -31,21 +31,18 @@ LOG_DIR="$HOME/mcp-logs"
 DATA_DIR="$HOME/mcp-data"
 mkdir -p "$LOG_DIR" "$DATA_DIR"
 
-echo "🚀 Starting all MCP servers..."
+echo "🚀 Starting all MCP servers...
 echo ""
 
-# Port 8000: QuantConnect MCP (Docker)
+# Port 8000: QuantConnect MCP (Docker stdio → Supergateway → HTTP)
 echo "[1/5] Starting QuantConnect MCP on port 8000..."
-docker rm -f quantconnect-mcp 2>/dev/null || true
-docker run -d \
-  --name quantconnect-mcp \
-  -p 8000:8000 \
-  -e QUANTCONNECT_USER_ID="${QUANTCONNECT_USER_ID}" \
-  -e QUANTCONNECT_API_TOKEN="${QUANTCONNECT_API_TOKEN}" \
-  quantconnect/mcp-server:latest \
-  python -m quantconnect_mcp.main --transport streamable-http --port 8000
+supergateway \
+  --stdio "docker run -i --rm -e QUANTCONNECT_USER_ID=${QUANTCONNECT_USER_ID} -e QUANTCONNECT_API_TOKEN=${QUANTCONNECT_API_TOKEN} quantconnect/mcp-server" \
+  --port 8000 \
+  > "${LOG_DIR}/quantconnect-mcp.log" 2>&1 &
+QC_PID=$!
 
-echo "✅ QuantConnect MCP started (Docker container: quantconnect-mcp)"
+echo "✅ QuantConnect MCP started (Supergateway wrapper, PID: $QC_PID)"
 echo ""
 
 # Port 8001: Linear MCP (Supergateway wrapper)
@@ -86,7 +83,7 @@ echo "    Auth: Bearer ${GITHUB_TOKEN:0:8}..."
 echo "✅ GitHub MCP configured (remote)"
 echo ""
 
-echo "⏳ Waiting 20 seconds for servers to initialize (Docker needs 15-20s)..."
+echo "⏳ Waiting 20 seconds for servers to initialize..."
 sleep 20
 echo ""
 
@@ -104,6 +101,7 @@ echo ""
 echo "✅ All MCP servers started!"
 echo ""
 echo "Process IDs:"
+echo "  - QuantConnect MCP (8000): $QC_PID"
 echo "  - Linear MCP (8001): $LINEAR_PID"
 echo "  - Memory MCP (8002): $MEMORY_PID"
 echo "  - Sequential Thinking (8003): $THINKING_PID"
