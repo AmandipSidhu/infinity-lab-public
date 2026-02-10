@@ -34,52 +34,55 @@ mkdir -p "$LOG_DIR" "$DATA_DIR"
 echo "🚀 Starting all MCP servers..."
 echo ""
 
-# Port 8000: QuantConnect MCP (Docker stdio → Supergateway → streamableHttp)
+# Port 8000: QuantConnect MCP (Docker stdio → Supergateway → Streamable HTTP)
 echo "[1/5] Starting QuantConnect MCP on port 8000..."
 supergateway \
   --stdio "docker run -i --rm -e QUANTCONNECT_USER_ID=${QUANTCONNECT_USER_ID} -e QUANTCONNECT_API_TOKEN=${QUANTCONNECT_API_TOKEN} quantconnect/mcp-server" \
   --outputTransport streamableHttp \
+  --stateful \
   --port 8000 \
   --healthEndpoint /health \
   > "${LOG_DIR}/quantconnect-mcp.log" 2>&1 &
 QC_PID=$!
 
-echo "✅ QuantConnect MCP started (PID: $QC_PID)"
+echo "✅ QuantConnect MCP started (Supergateway wrapper, PID: $QC_PID)"
 echo ""
 
-# Port 8001: Linear MCP (stdio → Supergateway → streamableHttp)
+# Port 8001: Linear MCP (stdio → Supergateway → Streamable HTTP)
 echo "[2/5] Starting Linear MCP on port 8001..."
 supergateway \
   --stdio "mcp-linear --token ${LINEAR_API_KEY}" \
   --outputTransport streamableHttp \
+  --stateful \
   --port 8001 \
   --healthEndpoint /health \
   > "${LOG_DIR}/linear-mcp.log" 2>&1 &
 LINEAR_PID=$!
 
-echo "✅ Linear MCP started (PID: $LINEAR_PID)"  
+echo "✅ Linear MCP started (Supergateway wrapper, PID: $LINEAR_PID)"  
 echo ""
 
-# Port 8002: Memory MCP (stdio → Supergateway → streamableHttp)
+# Port 8002: Memory MCP (stdio → Supergateway → Streamable HTTP)
 echo "[3/5] Starting Memory MCP on port 8002..."
 export MEMORY_FILE_PATH="${DATA_DIR}/memory.json"
 supergateway \
   --stdio "npx -y @modelcontextprotocol/server-memory" \
   --outputTransport streamableHttp \
+  --stateful \
   --port 8002 \
   --healthEndpoint /health \
   > "${LOG_DIR}/memory-mcp.log" 2>&1 &
 MEMORY_PID=$!
 
-echo "✅ Memory MCP started (PID: $MEMORY_PID)"
+echo "✅ Memory MCP started (Supergateway wrapper, PID: $MEMORY_PID)"
 echo ""
 
-# Port 8003: Sequential Thinking MCP (native streamableHttp)
+# Port 8003: Sequential Thinking MCP (native Streamable HTTP)
 echo "[4/5] Starting Sequential Thinking MCP on port 8003..."
 (cd "$HOME/mcp-servers/sequential-thinking" && PORT=8003 npm start > "${LOG_DIR}/thinking-mcp.log" 2>&1) &
 THINKING_PID=$!
 
-echo "✅ Sequential Thinking MCP started (PID: $THINKING_PID)"
+echo "✅ Sequential Thinking MCP started (native HTTP, PID: $THINKING_PID)"
 echo ""
 
 # Port 8004: GitHub MCP (remote - no local process)
