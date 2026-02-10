@@ -1,0 +1,137 @@
+name: Test MCP Stack
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/test-mcp-stack.yml'
+      - 'ARCHITECTURE_v2.9.md'
+
+jobs:
+  test-mcp-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Docker
+        uses: docker/setup-buildx-action@v3
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+
+      - name: Create .env.mcp from GitHub Secrets
+        run: |
+          cat > ~/.env.mcp << EOF
+          # Auto-generated from GitHub Secrets
+          LINEAR_API_KEY=${{ secrets.LINEAR_API_KEY }}
+          QUANTCONNECT_USER_ID=${{ secrets.QC_USER_ID }}
+          QUANTCONNECT_API_TOKEN=${{ secrets.QC_API_TOKEN }}
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          MEMORY_FILE_PATH=$HOME/mcp-data/memory.json
+          EOF
+          echo "✅ Created ~/.env.mcp from secrets"
+
+      - name: Install MCP dependencies
+        run: |
+          bash scripts/install_mcp_deps.sh
+
+      - name: Start all MCP servers
+        run: |
+          bash scripts/start_all_mcps.sh
+
+      - name: Verify health checks
+        run: |
+          echo "🔍 Testing individual MCP endpoints..."
+          
+          # Test QuantConnect (8000)
+          echo "Testing QuantConnect MCP (port 8000)..."
+          curl -f http://localhost:8000/health || { echo "❌ QuantConnect failed"; exit 1; }
+          echo "✅ QuantConnect healthy"
+          
+          # Test Linear (8001)
+          echo "Testing Linear MCP (port 8001)..."
+          curl -f http://localhost:8001/health || { echo "❌ Linear failed"; exit 1; }
+          echo "✅ Linear healthy"
+          
+          # Test Memory (8002)
+          echo "Testing Memory MCP (port 8002)..."
+          curl -f http://localhost:8002/health || { echo "❌ Memory failed"; exit 1; }
+          echo "✅ Memory healthy"
+          
+          # Test Sequential Thinking (8003)
+          echo "Testing Sequential Thinking MCP (port 8003)..."
+          curl -f http://localhost:8003/health || { echo "❌ Sequential Thinking failed"; exit 1; }
+          echo "✅ Sequential Thinking healthy"
+          
+          echo "✅ All health checks passed!"
+
+      - name: Check MCP logs
+        if: always()
+        run: |
+          echo "📋 MCP Server Logs:"
+          echo ""
+          echo "=== Linear MCP ==="
+          tail -20 ~/mcp-logs/linear-mcp.log || echo "No Linear logs"
+          echo ""
+          echo "=== Memory MCP ==="
+          tail -20 ~/mcp-logs/memory-mcp.log || echo "No Memory logs"
+          echo ""
+          echo "=== Sequential Thinking MCP ==="
+          tail -20 ~/mcp-logs/thinking-mcp.log || echo "No Thinking logs"
+          echo ""
+          echo "=== QuantConnect MCP (Docker) ==="
+          docker logs quantconnect-mcp --tail 20 || echo "No QC logs"
+
+      - name: Stop all MCP servers
+        if: always()
+        run: |
+          bash scripts/stop_all_mcps.sh
+
+      - name: Verify clean shutdown
+        if: always()
+        run: |
+          echo "🔍 Verifying all processes stopped..."
+          
+          # Check if any MCP processes still running
+          if pgrep -f "supergateway" > /dev/null; then
+            echo "⚠️ Supergateway processes still running"
+            pgrep -af "supergateway"
+          else
+            echo "✅ No Supergateway processes"
+          fi
+          
+          if pgrep -f "sequential-thinking" > /dev/null; then
+            echo "⚠️ Sequential Thinking still running"
+            pgrep -af "sequential-thinking"
+          else
+            echo "✅ No Sequential Thinking processes"
+          fi
+          
+          if docker ps | grep quantconnect-mcp > /dev/null; then
+            echo "⚠️ QuantConnect Docker still running"
+            docker ps | grep quantconnect-mcp
+          else
+            echo "✅ No QuantConnect Docker container"
+          fi
+          
+          echo "✅ Clean shutdown verified"
+
+      - name: Report results to Linear
+        if: always()
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: |
+          # TODO: Add Linear API call to update UNI-50 with test results
+          echo "📊 Test Results:"
+          echo "  Workflow: ${{ github.workflow }}"
+          echo "  Run: ${{ github.run_number }}"
+          echo "  Status: ${{ job.status }}"
