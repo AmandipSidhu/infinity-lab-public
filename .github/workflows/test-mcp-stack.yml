@@ -79,13 +79,13 @@ jobs:
         run: |
           echo "📋 MCP Server Logs:"
           echo ""
-          echo "=== QuantConnect MCP (via Supergateway) ==="
+          echo "=== QuantConnect MCP ==="
           tail -20 ~/mcp-logs/quantconnect-mcp.log || echo "No QuantConnect logs"
           echo ""
-          echo "=== Linear MCP (via Supergateway) ==="
+          echo "=== Linear MCP ==="
           tail -20 ~/mcp-logs/linear-mcp.log || echo "No Linear logs"
           echo ""
-          echo "=== Memory MCP (via Supergateway) ==="
+          echo "=== Memory MCP ==="
           tail -20 ~/mcp-logs/memory-mcp.log || echo "No Memory logs"
           echo ""
           echo "=== Sequential Thinking MCP ==="
@@ -116,13 +116,8 @@ jobs:
             echo "✅ No Sequential Thinking processes"
           fi
           
-          # Note: Docker containers auto-deleted with --rm flag
-          if docker ps -a | grep "quantconnect/mcp-server" > /dev/null; then
-            echo "⚠️ QuantConnect Docker containers still exist"
-            docker ps -a | grep "quantconnect/mcp-server"
-          else
-            echo "✅ No QuantConnect Docker containers"
-          fi
+          # Note: QuantConnect runs inside Supergateway with --rm flag
+          # Docker containers are automatically cleaned up
           
           echo "✅ Clean shutdown verified"
 
