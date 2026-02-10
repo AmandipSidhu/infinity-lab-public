@@ -1,48 +1,62 @@
 #!/bin/bash
-# stop_all_mcps.sh - Stop all MCP servers
+# stop_all_mcps.sh - Stop all 5 MCP servers
 # Part of Infinity 5 Bootstrap v6.1
-# Related: UNI-50, MCP_RESEARCH_FINDINGS.md
+# Related: UNI-50, ARCHITECTURE v2.9 CORRECTED
 
 echo "🛑 Stopping all MCP servers..."
 echo ""
 
-# Stop Docker container (QuantConnect)
-echo "[1/4] Stopping QuantConnect MCP (Docker)..."
-if docker ps -a | grep -q quantconnect-mcp; then
-    docker stop quantconnect-mcp 2>/dev/null || true
-    docker rm quantconnect-mcp 2>/dev/null || true
-    echo "✅ QuantConnect MCP stopped"
+# Stop all Supergateway processes (wraps QC, Linear, Memory)
+echo "Stopping Supergateway processes..."
+if pgrep -f "supergateway" > /dev/null; then
+    pkill -f "supergateway"
+    echo "✅ Supergateway processes stopped"
 else
-    echo "ℹ️  QuantConnect MCP not running"
+    echo "ℹ️  No Supergateway processes running"
 fi
-echo ""
 
-# Stop Supergateway instances (Linear + Memory)
-echo "[2/4] Stopping Linear MCP (port 8001)..."
-if pkill -f "supergateway.*8001" 2>/dev/null; then
-    echo "✅ Linear MCP stopped"
+# Stop Sequential Thinking MCP (native Node process)
+echo "Stopping Sequential Thinking MCP..."
+if pgrep -f "sequential-thinking" > /dev/null; then
+    pkill -f "sequential-thinking"
+    echo "✅ Sequential Thinking stopped"
 else
-    echo "ℹ️  Linear MCP not running"
+    echo "ℹ️  Sequential Thinking not running"
 fi
-echo ""
 
-echo "[3/4] Stopping Memory MCP (port 8002)..."
-if pkill -f "supergateway.*8002" 2>/dev/null; then
-    echo "✅ Memory MCP stopped"
+# Clean up any orphaned Docker containers from QuantConnect
+echo "Cleaning up Docker containers..."
+if docker ps -a | grep "quantconnect/mcp-server" > /dev/null; then
+    docker ps -a | grep "quantconnect/mcp-server" | awk '{print $1}' | xargs docker rm -f
+    echo "✅ Docker containers cleaned"
 else
-    echo "ℹ️  Memory MCP not running"
+    echo "ℹ️  No Docker containers to clean"
 fi
-echo ""
 
-# Stop Sequential Thinking (Node.js process)
-echo "[4/4] Stopping Sequential Thinking MCP (port 8003)..."
-if pkill -f "sequential-thinking" 2>/dev/null; then
-    echo "✅ Sequential Thinking MCP stopped"
+# Verify all processes stopped
+echo ""
+echo "🔍 Verifying shutdown..."
+
+if pgrep -f "supergateway" > /dev/null; then
+    echo "⚠️  Warning: Supergateway still running"
+    pgrep -af "supergateway"
 else
-    echo "ℹ️  Sequential Thinking MCP not running"
+    echo "✅ No Supergateway processes"
 fi
-echo ""
 
+if pgrep -f "sequential-thinking" > /dev/null; then
+    echo "⚠️  Warning: Sequential Thinking still running"
+    pgrep -af "sequential-thinking"
+else
+    echo "✅ No Sequential Thinking processes"
+fi
+
+if docker ps | grep "quantconnect/mcp-server" > /dev/null; then
+    echo "⚠️  Warning: Docker containers still running"
+    docker ps | grep "quantconnect/mcp-server"
+else
+    echo "✅ No Docker containers"
+fi
+
+echo ""
 echo "✅ All MCP servers stopped"
-echo ""
-echo "To restart: ./scripts/start_all_mcps.sh"
