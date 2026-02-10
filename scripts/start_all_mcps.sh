@@ -5,6 +5,15 @@
 
 set -e
 
+# Verify dependencies installed
+echo "🔍 Verifying dependencies..."
+command -v supergateway >/dev/null 2>&1 || { echo "❌ supergateway not found. Run install_mcp_deps.sh first"; exit 1; }
+command -v mcp-linear >/dev/null 2>&1 || { echo "❌ mcp-linear not found. Run install_mcp_deps.sh first"; exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "❌ Docker not found. Install Docker first"; exit 1; }
+[ -d "$HOME/mcp-servers/sequential-thinking" ] || { echo "❌ Sequential Thinking not found. Run install_mcp_deps.sh first"; exit 1; }
+echo "✅ All dependencies found"
+echo ""
+
 # Load environment variables
 if [ -f ~/.env.mcp ]; then
     source ~/.env.mcp
@@ -20,6 +29,7 @@ fi
 
 LOG_DIR="$HOME/mcp-logs"
 DATA_DIR="$HOME/mcp-data"
+mkdir -p "$LOG_DIR" "$DATA_DIR"
 
 echo "🚀 Starting all MCP servers..."
 echo ""
@@ -44,8 +54,9 @@ supergateway \
   --stdio "mcp-linear --token ${LINEAR_API_KEY}" \
   --port 8001 \
   > "${LOG_DIR}/linear-mcp.log" 2>&1 &
+LINEAR_PID=$!
 
-echo "✅ Linear MCP started (Supergateway wrapper, PID: $!)"  
+echo "✅ Linear MCP started (Supergateway wrapper, PID: $LINEAR_PID)"  
 echo ""
 
 # Port 8002: Memory MCP (Supergateway wrapper)
@@ -55,27 +66,28 @@ supergateway \
   --stdio "npx -y @modelcontextprotocol/server-memory" \
   --port 8002 \
   > "${LOG_DIR}/memory-mcp.log" 2>&1 &
+MEMORY_PID=$!
 
-echo "✅ Memory MCP started (Supergateway wrapper, PID: $!)"
+echo "✅ Memory MCP started (Supergateway wrapper, PID: $MEMORY_PID)"
 echo ""
 
 # Port 8003: Sequential Thinking MCP (native HTTP)
 echo "[4/5] Starting Sequential Thinking MCP on port 8003..."
-cd "$HOME/mcp-servers/sequential-thinking"
-PORT=8003 npm start > "${LOG_DIR}/thinking-mcp.log" 2>&1 &
+(cd "$HOME/mcp-servers/sequential-thinking" && PORT=8003 npm start > "${LOG_DIR}/thinking-mcp.log" 2>&1) &
+THINKING_PID=$!
 
-echo "✅ Sequential Thinking MCP started (native HTTP, PID: $!)"
+echo "✅ Sequential Thinking MCP started (native HTTP, PID: $THINKING_PID)"
 echo ""
 
 # Port 8004: GitHub MCP (remote - no local process)
 echo "[5/5] GitHub MCP uses remote endpoint"
 echo "    URL: https://api.githubcopilot.com/mcp/"
-echo "    Auth: Bearer ${GITHUB_TOKEN}"
+echo "    Auth: Bearer ${GITHUB_TOKEN:0:8}..."
 echo "✅ GitHub MCP configured (remote)"
 echo ""
 
-echo "⏳ Waiting 10 seconds for servers to initialize..."
-sleep 10
+echo "⏳ Waiting 20 seconds for servers to initialize (Docker needs 15-20s)..."
+sleep 20
 echo ""
 
 echo "🔍 Health checks:"
@@ -90,6 +102,11 @@ echo "  ℹ️  Port 8004: GitHub MCP (remote, no local health check)"
 echo ""
 
 echo "✅ All MCP servers started!"
+echo ""
+echo "Process IDs:"
+echo "  - Linear MCP (8001): $LINEAR_PID"
+echo "  - Memory MCP (8002): $MEMORY_PID"
+echo "  - Sequential Thinking (8003): $THINKING_PID"
 echo ""
 echo "Logs: ${LOG_DIR}/"
 echo "Data: ${DATA_DIR}/"
