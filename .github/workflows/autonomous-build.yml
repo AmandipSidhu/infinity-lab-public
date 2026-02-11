@@ -1,6 +1,27 @@
+# Autonomous Strategy Build Workflow
+#
+# HOW TO TRIGGER (for AI assistants):
+# 1. Create a GitHub issue in this repo (infinity-lab-public)
+# 2. Add label: "autonomous-build"
+# 3. Issue body = strategy request (e.g., "Create RSI strategy for SPY")
+# 4. Workflow automatically starts Aider with full MCP stack
+#
+# Example:
+#   Title: "Build momentum strategy"
+#   Body: "Create a 20-day SMA crossover strategy for QQQ"
+#   Labels: ["autonomous-build"]
+#
+# Aider will have access to:
+# - QuantConnect MCP (60+ trading tools)
+# - Linear MCP (task tracking)
+# - Memory MCP (knowledge graph)
+# - Sequential Thinking MCP (reasoning)
+
 name: Autonomous Strategy Build
 
 on:
+  issues:
+    types: [opened, labeled]
   workflow_dispatch:
     inputs:
       strategy_request:
@@ -8,16 +29,33 @@ on:
         required: true
         type: string
       issue_number:
-        description: 'Linear issue number (optional)'
+        description: 'GitHub issue number (optional)'
         required: false
         type: string
 
 jobs:
   build-strategy:
+    # Only run if issue has 'autonomous-build' label OR manually triggered
+    if: |
+      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'autonomous-build')) ||
+      github.event_name == 'workflow_dispatch'
+    
     runs-on: ubuntu-latest
     timeout-minutes: 30
     
     steps:
+      - name: Add starting comment to issue
+        if: github.event_name == 'issues'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🚀 **Autonomous build started**\n\nAider is now building your strategy with full MCP stack access.\n\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+            })
+      
       - name: Checkout repository
         uses: actions/checkout@v4
       
@@ -62,6 +100,19 @@ jobs:
         run: |
           pip install aider-chat
       
+      - name: Set strategy request
+        id: strategy
+        run: |
+          if [ "${{ github.event_name }}" = "issues" ]; then
+            # Extract strategy request from issue body
+            echo "request=${{ github.event.issue.body }}" >> $GITHUB_OUTPUT
+            echo "issue_num=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          else
+            # Use manual input
+            echo "request=${{ github.event.inputs.strategy_request }}" >> $GITHUB_OUTPUT
+            echo "issue_num=${{ github.event.inputs.issue_number }}" >> $GITHUB_OUTPUT
+          fi
+      
       - name: Run Aider autonomous build
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -81,11 +132,35 @@ jobs:
           
           # Run Aider with strategy request
           aider \
-            --message "${{ github.event.inputs.strategy_request }}" \
+            --message "${{ steps.strategy.outputs.request }}" \
             --yes \
             --auto-commits \
             --model claude-3-5-sonnet-20241022 \
             --config aider_mcp_config.json
+      
+      - name: Comment success on issue
+        if: success() && github.event_name == 'issues'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ **Build completed successfully**\n\nStrategy has been built and committed. Check the [workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.'
+            })
+      
+      - name: Comment failure on issue
+        if: failure() && github.event_name == 'issues'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ **Build failed**\n\nSee [workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for error details.'
+            })
       
       - name: Show MCP logs on failure
         if: failure()
