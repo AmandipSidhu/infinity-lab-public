@@ -108,12 +108,16 @@ jobs:
         id: strategy
         run: |
           if [ "${{ github.event_name }}" = "issues" ]; then
-            # Extract strategy request from issue body
-            echo "request=${{ github.event.issue.body }}" >> $GITHUB_OUTPUT
+            # Extract strategy request from issue body (heredoc for multi-line)
+            echo 'request<<EOF' >> $GITHUB_OUTPUT
+            echo "${{ github.event.issue.body }}" >> $GITHUB_OUTPUT
+            echo 'EOF' >> $GITHUB_OUTPUT
             echo "issue_num=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
           else
-            # Use manual input
-            echo "request=${{ github.event.inputs.strategy_request }}" >> $GITHUB_OUTPUT
+            # Use manual input (heredoc for multi-line)
+            echo 'request<<EOF' >> $GITHUB_OUTPUT
+            echo "${{ github.event.inputs.strategy_request }}" >> $GITHUB_OUTPUT
+            echo 'EOF' >> $GITHUB_OUTPUT
             echo "issue_num=${{ github.event.inputs.issue_number }}" >> $GITHUB_OUTPUT
           fi
       
