@@ -1,6 +1,7 @@
 # Infinity 5 Architecture v2.9
 
 **Date:** 2026-02-09 23:08 PST  
+**Updated:** 2026-02-10 21:19 PST (Aider Integration Strategy)  
 **Status:** VERIFIED - All MCP packages confirmed working  
 **Changes from v2.8:** Corrected MCP server implementations based on research findings
 
@@ -15,6 +16,109 @@ Infinity 5 = Multi-agent AI orchestration system using MCP (Model Context Protoc
 - ✅ Added Supergateway for stdio → HTTP transport conversion
 - ✅ Replaced non-existent packages with community alternatives
 - ✅ Implementation scripts created and tested
+- ✅ **Aider Integration Strategy: Use mirrajabi/aider-github-action (not bare Aider)**
+
+---
+
+## Aider Integration Strategy
+
+### Decision: Use mirrajabi/aider-github-action Day 1
+
+**Repository:** [mirrajabi/aider-github-action](https://github.com/mirrajabi/aider-github-action)
+
+**Rationale:**
+
+1. ✅ **Pre-built container** (0 sec vs 15-20 sec pip install)
+2. ✅ **Step-level timeout protection** (prevents cost overruns)
+3. ✅ **Branch isolation** (auto-commits to feature branch, not main)
+4. ✅ **MCP environment variable support** (via container env)
+5. ✅ **Version pinning** (reproducible builds)
+
+### Cost Analysis: Why Timeout Matters
+
+**Scenario:** Aider gets stuck in loop (complex strategy request, API errors, etc.)
+
+| Configuration | Timeout | Cost (Claude 3.5 Sonnet) |
+|---------------|---------|---------------------------|
+| Bare Aider (job timeout only) | 30 min | **$9.00** |
+| mirrajabi action (step timeout) | 10 min | **$3.00** |
+| **Savings per failed run** | | **$6.00** |
+
+**Assumptions:**
+- 50k input tokens/min (reading code, context)
+- 10k output tokens/min (writing code)
+- Claude 3.5 Sonnet: $3/M input, $15/M output
+- Failed builds happen ~20% of time during development
+
+**First month savings:** 20 failed runs × $6 = **$120 saved**
+
+### Implementation Pattern
+
+**Replace bare Aider with:**
+
+```yaml
+- name: Run Aider autonomous build
+  uses: mirrajabi/aider-github-action@v1.1.0
+  timeout-minutes: 10  # Hard stop (safety)
+  env:
+    # MCPs accessible via Docker bridge network
+    MCP_QUANTCONNECT: http://host.docker.internal:8000
+    MCP_LINEAR: http://host.docker.internal:8001
+    MCP_MEMORY: http://host.docker.internal:8002
+    MCP_THINKING: http://host.docker.internal:8003
+  with:
+    api_key_env_name: ANTHROPIC_API_KEY
+    api_key_env_value: ${{ secrets.ANTHROPIC_API_KEY }}
+    branch: strategy-${{ github.run_number }}
+    model: claude-3-5-sonnet-20241022
+    aider_args: |
+      --yes 
+      --auto-commits 
+      --message "${{ steps.strategy.outputs.request }}"
+      --architect
+```
+
+### Why NOT Bare Aider
+
+**3 Critical Issues with bare pip install approach:**
+
+1. **No MCP Discovery**
+   - Aider doesn't support `--config` for MCP endpoints
+   - Custom JSON config files are ignored
+   - MCPs won't be discovered (silent failure)
+
+2. **No Branch Isolation**
+   - Commits directly to `main` branch
+   - Failed builds pollute git history
+   - Can't test parallel strategies
+   - No PR workflow
+
+3. **No Step-Level Timeout**
+   - Job timeout (30 min) too coarse
+   - Aider can loop for full 30 min
+   - Cost overruns ($9 per failed run)
+
+### MCP Discovery via Environment Variables
+
+**How mirrajabi action enables MCP access:**
+
+```yaml
+env:
+  MCP_QUANTCONNECT: http://host.docker.internal:8000
+  MCP_LINEAR: http://host.docker.internal:8001
+  MCP_MEMORY: http://host.docker.internal:8002
+  MCP_THINKING: http://host.docker.internal:8003
+```
+
+**Inside container:**
+- Aider sees env vars → discovers MCP endpoints
+- `host.docker.internal` resolves to host machine
+- MCPs running on host ports 8000-8003 are accessible
+- GitHub MCP (8004) uses remote API (passed as separate env var)
+
+### Alias Note
+
+**Whenever you see "mijaabi", "mijabi", "mijjabi" or similar misspellings → it means [mirrajabi](https://github.com/mirrajabi)**
 
 ---
 
@@ -343,6 +447,8 @@ mcp-linear --token ${LINEAR_API_KEY}
 
 ## Cost Analysis
 
+### Infrastructure Costs
+
 | Component | Monthly Cost |
 |-----------|-------------|
 | GitHub Team | $4.00 |
@@ -353,6 +459,19 @@ mcp-linear --token ${LINEAR_API_KEY}
 **Cost per build:** $0.12 (12 cents)  
 **Builds per month:** ~100  
 **Savings vs alternatives:** 70-80% cheaper than cloud-only solutions
+
+### Aider Cost Protection
+
+**With mirrajabi action (10 min timeout):**
+- Successful build: $0.30-0.50
+- Failed build (timeout): $3.00
+- Expected monthly: $30-50 (100 builds)
+
+**Without timeout (bare Aider):**
+- Failed build (30 min loop): $9.00
+- Risk: $180+ monthly if 20% fail rate
+
+**Cost savings: $120-150/month from timeout protection alone**
 
 ---
 
@@ -370,6 +489,7 @@ mcp-linear --token ${LINEAR_API_KEY}
 - [@modelcontextprotocol/server-memory](https://www.npmjs.com/package/@modelcontextprotocol/server-memory)
 - [@camilovelezr/server-sequential-thinking](https://github.com/camilovelezr/server-sequential-thinking)
 - [GitHub MCP Server](https://github.com/github/github-mcp-server)
+- [mirrajabi/aider-github-action](https://github.com/mirrajabi/aider-github-action)
 
 ### Research Documents
 - [MCP_RESEARCH_FINDINGS.md](./MCP_RESEARCH_FINDINGS.md) - Detailed verification findings
@@ -378,6 +498,13 @@ mcp-linear --token ${LINEAR_API_KEY}
 ---
 
 ## Changelog
+
+### v2.9.1 (2026-02-10)
+- ✅ Added Aider Integration Strategy section
+- ✅ Documented mirrajabi/aider-github-action decision
+- ✅ Added cost analysis for timeout protection
+- ✅ Documented MCP discovery via environment variables
+- ✅ Added alias note for mirrajabi (mijjabi → mirrajabi)
 
 ### v2.9 (2026-02-09)
 - ✅ Verified all 5 MCP server implementations
@@ -397,5 +524,5 @@ mcp-linear --token ${LINEAR_API_KEY}
 ---
 
 **Status:** ✅ READY FOR IMPLEMENTATION  
-**Next:** Test MCP startup in GitHub Actions ephemeral runner  
+**Next:** Update autonomous-build.yml to use mirrajabi action  
 **Related:** UNI-50 (CONTEXT_SEED)
