@@ -42,9 +42,10 @@ test_list_tools() {
     echo ""
     echo "Testing $server_name (port $port) - tools/list..."
     
-    # MCP protocol request
+    # MCP protocol request with required Accept header
     local response=$(curl -s -X POST "http://localhost:${port}/mcp" \
         -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" \
         -d '{
             "jsonrpc": "2.0",
             "id": 1,
@@ -91,6 +92,7 @@ test_load() {
         (
             if curl -sf -X POST "http://localhost:${port}/mcp" \
                 -H "Content-Type: application/json" \
+                -H "Accept: application/json, text/event-stream" \
                 -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' > /dev/null 2>&1; then
                 echo "success" > /tmp/load_test_${i}.result
             else
