@@ -33,6 +33,10 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: write
+  issues: write
+
 jobs:
   build-strategy:
     # Only run if issue has 'autonomous-build' label OR manually triggered
