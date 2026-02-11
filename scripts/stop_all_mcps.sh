@@ -24,6 +24,25 @@ else
     echo "ℹ️  Sequential Thinking not running"
 fi
 
+# Fallback: Kill by port (catches orphaned subshells/wrappers)
+echo "Checking for orphaned processes on MCP ports..."
+for port in 8000 8001 8002 8003; do
+    if command -v lsof > /dev/null 2>&1; then
+        if lsof -ti :${port} > /dev/null 2>&1; then
+            echo "  Killing process on port ${port}..."
+            lsof -ti :${port} | xargs kill -9 2>/dev/null || true
+        fi
+    elif command -v ss > /dev/null 2>&1; then
+        # Fallback for systems without lsof
+        PID=$(ss -lptn "sport = :${port}" 2>/dev/null | grep -oP '(?<=pid=)\d+' | head -1)
+        if [ -n "$PID" ]; then
+            echo "  Killing process $PID on port ${port}..."
+            kill -9 "$PID" 2>/dev/null || true
+        fi
+    fi
+done
+echo "✅ Port-based cleanup complete"
+
 # Clean up any orphaned Docker containers from QuantConnect
 echo "Cleaning up Docker containers..."
 if docker ps -a | grep "quantconnect/mcp-server" > /dev/null; then
@@ -50,6 +69,18 @@ if pgrep -f "sequential-thinking" > /dev/null; then
 else
     echo "✅ No Sequential Thinking processes"
 fi
+
+# Verify ports are free
+echo "Checking if MCP ports are free..."
+for port in 8000 8001 8002 8003; do
+    if command -v lsof > /dev/null 2>&1; then
+        if lsof -ti :${port} > /dev/null 2>&1; then
+            echo "⚠️  Port ${port} still in use"
+            lsof -i :${port}
+        fi
+    fi
+done
+echo "✅ All ports free"
 
 if docker ps | grep "quantconnect/mcp-server" > /dev/null; then
     echo "⚠️  Warning: Docker containers still running"
