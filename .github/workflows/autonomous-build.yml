@@ -1,0 +1,118 @@
+name: Autonomous Strategy Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      strategy_request:
+        description: 'Strategy build request'
+        required: true
+        type: string
+      issue_number:
+        description: 'Linear issue number (optional)'
+        required: false
+        type: string
+
+jobs:
+  build-strategy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Setup Docker
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/*.sh
+      
+      - name: Configure MCP environment
+        run: |
+          mkdir -p ~/.config
+          cat > ~/.env.mcp << EOF
+          LINEAR_API_KEY=${{ secrets.LINEAR_API_KEY }}
+          QUANTCONNECT_USER_ID=${{ secrets.QC_USER_ID }}
+          QUANTCONNECT_API_TOKEN=${{ secrets.QC_API_TOKEN }}
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          MEMORY_FILE_PATH=$HOME/mcp-data/memory.json
+          EOF
+      
+      - name: Install MCP dependencies
+        run: |
+          bash scripts/install_mcp_deps.sh
+      
+      - name: Start MCP servers
+        run: |
+          bash scripts/start_all_mcps.sh
+          echo "✅ MCP servers started"
+      
+      - name: Install Aider
+        run: |
+          pip install aider-chat
+      
+      - name: Run Aider autonomous build
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          # Configure Aider with MCP endpoints
+          cat > aider_mcp_config.json << EOF
+          {
+            "mcp_servers": {
+              "quantconnect": "http://localhost:8000/mcp",
+              "linear": "http://localhost:8001/mcp",
+              "memory": "http://localhost:8002/mcp",
+              "thinking": "http://localhost:8003/mcp"
+            }
+          }
+          EOF
+          
+          # Run Aider with strategy request
+          aider \
+            --message "${{ github.event.inputs.strategy_request }}" \
+            --yes \
+            --auto-commits \
+            --model claude-3-5-sonnet-20241022 \
+            --config aider_mcp_config.json
+      
+      - name: Show MCP logs on failure
+        if: failure()
+        run: |
+          echo "=== QuantConnect MCP logs ==="
+          docker logs quantconnect-mcp --tail 50 || echo "No Docker logs"
+          
+          echo "=== Linear MCP logs ==="
+          tail -50 ~/mcp-logs/linear-mcp.log || echo "No Linear logs"
+          
+          echo "=== Memory MCP logs ==="
+          tail -50 ~/mcp-logs/memory-mcp.log || echo "No Memory logs"
+          
+          echo "=== Sequential Thinking logs ==="
+          tail -50 ~/mcp-logs/thinking-mcp.log || echo "No Thinking logs"
+      
+      - name: Stop MCP servers
+        if: always()
+        run: |
+          bash scripts/stop_all_mcps.sh
+      
+      - name: Upload strategy artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-build-${{ github.run_number }}
+          path: |
+            strategies/
+            backtests/
+            *.py
