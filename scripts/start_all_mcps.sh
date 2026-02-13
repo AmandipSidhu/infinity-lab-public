@@ -1,7 +1,7 @@
 #!/bin/bash
-# start_all_mcps.sh - Start all 5 MCP servers
+# start_all_mcps.sh - Start all 7 MCP servers (v4.0 Day 1)
 # Part of Infinity 5 Bootstrap v6.1
-# Related: UNI-50, ARCHITECTURE v2.9 CORRECTED
+# Related: UNI-50, ARCHITECTURE_v4.0.md
 
 set -e
 
@@ -11,6 +11,7 @@ command -v supergateway >/dev/null 2>&1 || { echo "❌ supergateway not found. R
 command -v mcp-linear >/dev/null 2>&1 || { echo "❌ mcp-linear not found. Run install_mcp_deps.sh first"; exit 1; }
 command -v docker >/dev/null 2>&1 || { echo "❌ Docker not found. Install Docker first"; exit 1; }
 [ -d "$HOME/mcp-servers/sequential-thinking" ] || { echo "❌ Sequential Thinking not found. Run install_mcp_deps.sh first"; exit 1; }
+[ -d "$HOME/.chromadb" ] || { echo "⚠️  Warning: ChromaDB not found at ~/.chromadb. Run: python scripts/ingest_knowledge_db.py"; }
 echo "✅ All dependencies found"
 echo ""
 
@@ -24,6 +25,8 @@ else
     echo "  QUANTCONNECT_USER_ID=your_id"
     echo "  QUANTCONNECT_API_TOKEN=your_token"
     echo "  GITHUB_TOKEN=your_token"
+    echo "  ALPACA_API_KEY=your_key (optional for testing)"
+    echo "  ALPACA_API_SECRET=your_secret (optional for testing)"
     exit 1
 fi
 
@@ -31,11 +34,11 @@ LOG_DIR="$HOME/mcp-logs"
 DATA_DIR="$HOME/mcp-data"
 mkdir -p "$LOG_DIR" "$DATA_DIR"
 
-echo "🚀 Starting all MCP servers..."
+echo "🚀 Starting all 7 MCP servers (v4.0 Day 1)..."
 echo ""
 
 # Port 8000: QuantConnect MCP (Docker stdio → Supergateway → streamableHttp)
-echo "[1/5] Starting QuantConnect MCP on port 8000..."
+echo "[1/7] Starting QuantConnect MCP on port 8000..."
 supergateway \
   --stdio "docker run -i --rm -e QUANTCONNECT_USER_ID=${QUANTCONNECT_USER_ID} -e QUANTCONNECT_API_TOKEN=${QUANTCONNECT_API_TOKEN} quantconnect/mcp-server" \
   --outputTransport streamableHttp \
@@ -48,7 +51,7 @@ echo "✅ QuantConnect MCP started (Supergateway wrapper, PID: $QC_PID)"
 echo ""
 
 # Port 8001: Linear MCP (stdio → Supergateway → streamableHttp)
-echo "[2/5] Starting Linear MCP on port 8001..."
+echo "[2/7] Starting Linear MCP on port 8001..."
 supergateway \
   --stdio "mcp-linear --token ${LINEAR_API_KEY}" \
   --outputTransport streamableHttp \
@@ -61,7 +64,7 @@ echo "✅ Linear MCP started (Supergateway wrapper, PID: $LINEAR_PID)"
 echo ""
 
 # Port 8002: Memory MCP (stdio → Supergateway → streamableHttp)
-echo "[3/5] Starting Memory MCP on port 8002..."
+echo "[3/7] Starting Memory MCP on port 8002..."
 export MEMORY_FILE_PATH="${DATA_DIR}/memory.json"
 supergateway \
   --stdio "npx -y @modelcontextprotocol/server-memory" \
@@ -75,7 +78,7 @@ echo "✅ Memory MCP started (Supergateway wrapper, PID: $MEMORY_PID)"
 echo ""
 
 # Port 8003: Sequential Thinking MCP (native streamableHttp)
-echo "[4/5] Starting Sequential Thinking MCP on port 8003..."
+echo "[4/7] Starting Sequential Thinking MCP on port 8003..."
 (cd "$HOME/mcp-servers/sequential-thinking" && PORT=8003 npm start > "${LOG_DIR}/thinking-mcp.log" 2>&1) &
 THINKING_PID=$!
 
@@ -83,10 +86,34 @@ echo "✅ Sequential Thinking MCP started (native streamableHttp, PID: $THINKING
 echo ""
 
 # Port 8004: GitHub MCP (remote - no local process)
-echo "[5/5] GitHub MCP uses remote endpoint"
+echo "[5/7] GitHub MCP uses remote endpoint"
 echo "    URL: https://api.githubcopilot.com/mcp/"
 echo "    Auth: Bearer ${GITHUB_TOKEN:0:8}..."
 echo "✅ GitHub MCP configured (remote)"
+echo ""
+
+# Port 8005: Knowledge RAG MCP (NEW - Day 1 Critical)
+echo "[6/7] Starting Knowledge RAG MCP on port 8005..."
+python3 scripts/knowledge_mcp_server.py > "${LOG_DIR}/knowledge-rag-mcp.log" 2>&1 &
+KNOWLEDGE_PID=$!
+
+echo "✅ Knowledge RAG MCP started (FastMCP, PID: $KNOWLEDGE_PID)"
+echo ""
+
+# Port 8006: Alpaca MCP with Rate Limiting (NEW - Day 1 Critical)
+echo "[7/7] Starting Alpaca MCP on port 8006..."
+if [ -n "$ALPACA_API_KEY" ]; then
+    export ALPACA_API_KEY
+    export ALPACA_API_SECRET
+    export ALPACA_BASE_URL="${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}"
+    python3 scripts/alpaca_rate_limited.py > "${LOG_DIR}/alpaca-mcp.log" 2>&1 &
+    ALPACA_PID=$!
+    echo "✅ Alpaca MCP started (rate limited, PID: $ALPACA_PID)"
+else
+    echo "⚠️  Alpaca MCP skipped (ALPACA_API_KEY not set)"
+    echo "    Set ALPACA_API_KEY in ~/.env.mcp to enable"
+    ALPACA_PID="N/A"
+fi
 echo ""
 
 echo "⏳ Waiting 20 seconds for servers to initialize..."
@@ -94,14 +121,7 @@ sleep 20
 echo ""
 
 echo "🔍 Health checks:"
-for port in 8000 8001 8002 8003; do
-    if curl -s -f http://localhost:${port}/health > /dev/null 2>&1; then
-        echo "  ✅ Port ${port}: Healthy"
-    else
-        echo "  ⚠️  Port ${port}: Not responding (check logs)"
-    fi
-done
-echo "  ℹ️  Port 8004: GitHub MCP (remote, no local health check)"
+bash scripts/health_check.sh
 echo ""
 
 echo "✅ All MCP servers started!"
@@ -111,6 +131,9 @@ echo "  - QuantConnect MCP (8000): $QC_PID"
 echo "  - Linear MCP (8001): $LINEAR_PID"
 echo "  - Memory MCP (8002): $MEMORY_PID"
 echo "  - Sequential Thinking (8003): $THINKING_PID"
+echo "  - GitHub MCP (8004): Remote"
+echo "  - Knowledge RAG (8005): $KNOWLEDGE_PID"
+echo "  - Alpaca MCP (8006): $ALPACA_PID"
 echo ""
 echo "Logs: ${LOG_DIR}/"
 echo "Data: ${DATA_DIR}/"
