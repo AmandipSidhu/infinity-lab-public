@@ -89,16 +89,33 @@ jobs:
           QUANTCONNECT_API_TOKEN=${{ secrets.QC_API_TOKEN }}
           GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
           MEMORY_FILE_PATH=$HOME/mcp-data/memory.json
+          SLACK_WEBHOOK=${{ secrets.SLACK_WEBHOOK }}
           EOF
+      
+      - name: Restore ChromaDB cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.chromadb
+          key: chromadb-${{ hashFiles('scripts/ingest_knowledge_db.py') }}
+          restore-keys: |
+            chromadb-
       
       - name: Install MCP dependencies
         run: |
           bash scripts/install_mcp_deps.sh
       
+      - name: Ingest Knowledge Database
+        run: |
+          echo "📥 Ingesting knowledge base (WorldQuant alphas, QC docs, patterns)..."
+          python scripts/ingest_knowledge_db.py
+          
+          echo "🧪 Validating RAG precision..."
+          python scripts/validate_rag.py
+      
       - name: Start MCP servers
         run: |
           bash scripts/start_all_mcps.sh
-          echo "✅ MCP servers started"
+          echo "✅ MCP servers started (6 MCPs on ports 8000-8005)"
       
       - name: Install Aider
         run: |
@@ -121,19 +138,31 @@ jobs:
             echo "issue_num=${{ github.event.inputs.issue_number }}" >> $GITHUB_OUTPUT
           fi
       
+      - name: Send Slack notification - Build starting
+        run: |
+          python3 -c "
+          import os, requests, json
+          webhook = os.getenv('SLACK_WEBHOOK', '')
+          if webhook:
+              requests.post(webhook, json={'text': '🚀 Strategy build starting: ${{ steps.strategy.outputs.request }}'})
+          "
+      
       - name: Run Aider autonomous build
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         run: |
-          # Configure Aider with MCP endpoints
+          # Configure Aider with MCP endpoints (6 MCPs)
           cat > aider_mcp_config.json << EOF
           {
             "mcp_servers": {
               "quantconnect": "http://localhost:8000/mcp",
               "linear": "http://localhost:8001/mcp",
               "memory": "http://localhost:8002/mcp",
-              "thinking": "http://localhost:8003/mcp"
+              "thinking": "http://localhost:8003/mcp",
+              "github": "http://localhost:8004/mcp",
+              "knowledge": "http://localhost:8005/mcp"
             }
           }
           EOF
@@ -145,6 +174,16 @@ jobs:
             --auto-commits \
             --model claude-3-5-sonnet-20241022 \
             --config aider_mcp_config.json
+      
+      - name: Send Slack notification - Build complete
+        if: success()
+        run: |
+          python3 -c "
+          import os, requests, json
+          webhook = os.getenv('SLACK_WEBHOOK', '')
+          if webhook:
+              requests.post(webhook, json={'text': '✅ Strategy build completed successfully'})
+          "
       
       - name: Comment success on issue
         if: success() && github.event_name == 'issues'
@@ -170,6 +209,16 @@ jobs:
               body: '❌ **Build failed**\n\nSee [workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for error details.'
             })
       
+      - name: Send Slack notification - Build failed
+        if: failure()
+        run: |
+          python3 -c "
+          import os, requests, json
+          webhook = os.getenv('SLACK_WEBHOOK', '')
+          if webhook:
+              requests.post(webhook, json={'text': '❌ Strategy build failed - check logs'})
+          "
+      
       - name: Show MCP logs on failure
         if: failure()
         run: |
@@ -184,6 +233,9 @@ jobs:
           
           echo "=== Sequential Thinking logs ==="
           tail -50 ~/mcp-logs/thinking-mcp.log || echo "No Thinking logs"
+          
+          echo "=== Knowledge RAG logs ==="
+          tail -50 ~/mcp-logs/knowledge-rag-mcp.log || echo "No Knowledge logs"
       
       - name: Stop MCP servers
         if: always()

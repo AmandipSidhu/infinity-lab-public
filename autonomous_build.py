@@ -247,6 +247,35 @@ def send_slack_notification(message: str, webhook_url: Optional[str] = None):
         print(f"⚠️  Slack notification failed: {e}")
 
 
+def notify_build_progress(
+    event: str,
+    details: Optional[Dict] = None,
+    webhook_url: Optional[str] = None
+):
+    """
+    Send granular build progress notifications to Slack.
+    
+    Events:
+    - spec_submitted: Strategy specification submitted
+    - iteration_start: Coding iteration starting
+    - backtest_complete: Backtest results ready
+    - next_iteration: Next iteration starting
+    - build_complete: Final strategy complete
+    """
+    messages = {
+        "spec_submitted": "🚀 Strategy spec submitted: {title}",
+        "iteration_start": "⚙️ Coding iteration {iteration} starting",
+        "backtest_complete": "🧪 Backtest complete: Sharpe {sharpe:.2f}, Drawdown {drawdown:.1f}%, Return {returns:.1f}%",
+        "next_iteration": "🔄 Next iteration starting (fitness: {trend})",
+        "build_complete": "✅ Strategy complete: Sharpe {sharpe:.2f}, Drawdown {drawdown:.1f}%, Return {returns:.1f}%",
+    }
+    
+    template = messages.get(event, "📊 Build update: {event}")
+    message = template.format(event=event, **(details or {}))
+    
+    send_slack_notification(message, webhook_url)
+
+
 def main():
     """Main autonomous build loop."""
     print("="*60)
