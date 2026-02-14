@@ -1,13 +1,13 @@
-# ARCHITECTURE v4.0 - Infinity Lab Autonomous Trading System
+# ARCHITECTURE v4.1 - Infinity Lab Autonomous Trading System
 
-**Date:** 2026-02-12 22:32 PST  
+**Date:** 2026-02-14 14:15 PST  
 **Status:** Production-Ready, Day 1 Complete Intelligence  
-**Previous:** v3.3 (weakness-hardened)
+**Previous:** v4.0 (Alpaca removed due to Canada restriction)
 
 ## Critical Philosophy Change
 
 **v3.3 approach:** Progressive capability enhancement  
-**v4.0 approach:** Day 1 complete intelligence, later features are marginal wins
+**v4.0+ approach:** Day 1 complete intelligence, later features are marginal wins
 
 **Translation:** The autonomous builder must be able to develop production-grade, live-trading-worthy strategies on Day 1. Features deferred to later phases are "nice-to-haves" that improve efficiency but aren't blockers. Even if later enhancements get skipped, the marginal difference is acceptable.
 
@@ -27,20 +27,21 @@
 
 ---
 
-## 2. Stack Overview (7 MCPs Day 1)
+## 2. Stack Overview (6 MCPs Day 1)
 
 | Port | Service | Purpose | Day 1? |
 |------|---------|---------|--------|
-| 8000 | QuantConnect | Backtests, data, execution | ✅ Critical |
+| 8000 | QuantConnect | Backtests, **data access** (via `get_history`), execution | ✅ Critical |
 | 8001 | Linear | Task tracking, external memory | ✅ Critical |
 | 8002 | Memory | Session context, RAG | ✅ Critical |
 | 8003 | Sequential Thinking | Deep reasoning | ✅ Critical |
 | 8004 | GitHub | Repo operations | ✅ Critical |
 | 8005 | Knowledge RAG | WorldQuant + QC docs | ✅ **Mandatory Day 1** |
-| 8006 | Alpaca | Data validation | ✅ **Mandatory Day 1** |
 
 **Cost:** $0 (all free tiers)  
-**Startup time:** 20 seconds parallel
+**Startup time:** 15 seconds parallel
+
+**Note:** Port 8006 (Alpaca) removed in v4.1. QC MCP already provides `get_history` tool for development-time data validation. No external data provider needed.
 
 ---
 
@@ -561,120 +562,98 @@ if __name__ == "__main__":
 
 ---
 
-## 6. Alpaca MCP (Port 8006) - **Mandatory Day 1**
+## 6. QuantConnect Data Validation (Port 8000)
 
 ### 6.1 Purpose
 
-**Development-time data access** for faster iteration:
-- Real market data during code writing (5 sec vs 2-5 min QC backtest)
-- Corporate actions awareness (earnings, dividends)
-- Asset discovery during research
+**Development-time data access** for faster iteration using QC MCP's built-in `get_history` tool:
+- Historical market data during code writing (5 sec vs 2-5 min full backtest)
+- Test indicator logic locally before QC upload
 - Preserve QC API quota for actual backtests
+- Zero external dependencies (no Alpaca, no Yahoo Finance)
 
-**Why Day 1:** Without this, every data validation requires full QC backtest cycle (2-5 min). With Alpaca, Aider validates data logic in 5 seconds locally before uploading to QC.
+**Why Day 1:** Without local data validation, every indicator test requires full QC backtest cycle (2-5 min). With QC MCP `get_history`, Aider validates data logic in 5 seconds locally before uploading.
 
-### 6.2 Rate Limiting (v3.3 Hardened)
+### 6.2 QC MCP get_history Tool
 
-**Alpaca free tier:** 200 req/min  
-**Safe limit:** 40 req/min (80% margin)
-
-**Token bucket implementation:**
+**Available in official QuantConnect MCP server:**
 
 ```python
-#!/usr/bin/env python3
-# scripts/alpaca_rate_limited.py
+# QC MCP provides this natively:
+# Tool: get_history
+# Parameters: symbols (list), start_date (str), end_date (str), resolution (str)
+# Returns: Historical OHLCV data as DataFrame
+```
 
-import time
-from collections import deque
-from alpaca_mcp_server import AlpacaMCP
+**Example usage in autonomous builder:**
 
-class TokenBucketRateLimiter:
-    def __init__(self, max_tokens=40, refill_rate=40/60):  # 40 per minute
-        self.max_tokens = max_tokens
-        self.tokens = max_tokens
-        self.refill_rate = refill_rate
-        self.last_refill = time.time()
-        self.request_history = deque(maxlen=100)
-    
-    def acquire(self, tokens=1):
-        # Refill tokens based on time passed
-        now = time.time()
-        elapsed = now - self.last_refill
-        self.tokens = min(self.max_tokens, self.tokens + elapsed * self.refill_rate)
-        self.last_refill = now
-        
-        if self.tokens >= tokens:
-            self.tokens -= tokens
-            self.request_history.append(now)
-            return True
-        else:
-            # Calculate wait time
-            wait_time = (tokens - self.tokens) / self.refill_rate
-            time.sleep(wait_time)
-            self.tokens = 0
-            self.request_history.append(time.time())
-            return True
-    
-    def get_stats(self):
-        now = time.time()
-        recent = [t for t in self.request_history if now - t < 60]
-        return {
-            'requests_last_minute': len(recent),
-            'tokens_available': self.tokens,
-            'rate_limit': self.max_tokens
-        }
+```python
+# Aider writing new indicator - validation workflow
 
-# Wrap Alpaca MCP
-rate_limiter = TokenBucketRateLimiter()
+# 1. Write indicator code
+indicator_code = """
+def calculate_rsi(bars, period=14):
+    deltas = bars['close'].diff()
+    gain = deltas.where(deltas > 0, 0).rolling(period).mean()
+    loss = -deltas.where(deltas < 0, 0).rolling(period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+"""
 
-class RateLimitedAlpacaMCP(AlpacaMCP):
-    def __call__(self, *args, **kwargs):
-        rate_limiter.acquire()
-        return super().__call__(*args, **kwargs)
+# 2. Call QC MCP to get historical data (5 seconds)
+response = qc_mcp.call_tool(
+    "get_history",
+    {
+        "symbols": ["AAPL"],
+        "start_date": "2024-01-01",
+        "end_date": "2024-12-31",
+        "resolution": "Daily"
+    }
+)
 
-if __name__ == "__main__":
-    mcp = RateLimitedAlpacaMCP()
-    mcp.run(transport="streamableHttp", port=8006)
+bars = response['data']  # DataFrame with OHLCV columns
+
+# 3. Test indicator locally
+try:
+    rsi_values = calculate_rsi(bars)
+    print(f"✅ RSI calculation works: {rsi_values.tail()}")
+except Exception as e:
+    print(f"❌ Error in RSI logic: {e}")
+    # Fix bugs, repeat steps 2-3
+
+# 4. Only upload to QC when validated
+# 5. Run full backtest (2-5 min) with confidence
 ```
 
 ### 6.3 Integration with Autonomous Builder
 
-**Use case: Aider writing new indicator**
+**Comparison:**
 
 ```python
-# Without Alpaca (slow):
+# Without QC data validation (slow):
 # 1. Write indicator code
 # 2. Upload to QC
-# 3. Run backtest (2-5 min)
+# 3. Run full backtest (2-5 min)
 # 4. Check if data parsing works
-# 5. Fix bugs, repeat
+# 5. Fix bugs, repeat all steps
+# Result: 5-10 min per iteration
 
-# With Alpaca (fast):
+# With QC MCP get_history (fast):
 # 1. Write indicator code
-# 2. Call Alpaca MCP for real AAPL bars (5 sec)
+# 2. Call QC MCP get_history (5 sec)
 # 3. Test locally
-# 4. Fix bugs immediately
+# 4. Fix bugs immediately (local iteration)
 # 5. Upload to QC only when validated
+# 6. Run full backtest once
+# Result: 5 sec per iteration, 1 full backtest
 ```
 
-**Example MCP call:**
-
-```python
-@mcp.tool()
-def validate_indicator_logic(symbol: str, period: int, indicator_code: str):
-    """Test indicator code against real market data before QC upload."""
-    # Get real bars from Alpaca
-    bars = alpaca_client.get_bars(symbol, period)
-    
-    # Execute indicator code
-    exec(indicator_code, {'bars': bars})
-    
-    return {
-        'success': True,
-        'sample_output': bars[:5],
-        'validation': 'Indicator logic correct'
-    }
-```
+**Benefits:**
+- ✅ Same 5-sec validation as Alpaca would have provided
+- ✅ Zero external dependencies (no API keys, no Canada restrictions)
+- ✅ Uses existing QC MCP infrastructure (port 8000)
+- ✅ Preserves QC API quota for actual backtests
+- ✅ Historical data (no need for real-time)
 
 ---
 
@@ -727,15 +706,15 @@ check_mcp_health() {
     return 1
 }
 
-# Check all MCPs
+# Check all MCPs (6 total, port 8006 removed)
 check_mcp_health 8000 "QuantConnect" || exit 1
 check_mcp_health 8001 "Linear" || exit 1
 check_mcp_health 8002 "Memory" || exit 1
 check_mcp_health 8003 "Sequential Thinking" || exit 1
+check_mcp_health 8004 "GitHub" || exit 1
 check_mcp_health 8005 "Knowledge RAG" || exit 1
-check_mcp_health 8006 "Alpaca" || exit 1
 
-echo "✅ All MCPs healthy"
+echo "✅ All 6 MCPs healthy"
 ```
 
 ### 7.3 ChromaDB Persistence (GitHub Actions Cache)
@@ -844,7 +823,7 @@ for iteration in range(max_iterations):
 - GitHub Actions (2000 min/month free)
 - Gemini 2.0 Flash Thinking (free tier)
 - GPT-4o GitHub Models (free)
-- Alpaca (free tier, 200 req/min)
+- QuantConnect MCP (free, includes data access)
 - All MCPs open source
 - Supergateway (open source)
 - ChromaDB (local)
@@ -853,7 +832,7 @@ for iteration in range(max_iterations):
 
 ## 10. Implementation Runbook
 
-### Phase 1: Day 1 Core (8-12 hours) - MUST-HAVES
+### Phase 1: Day 1 Core (7-10 hours) - MUST-HAVES
 
 **Cannot proceed to Phase 2 until all validated.**
 
@@ -877,56 +856,51 @@ for iteration in range(max_iterations):
    - Gate: Must pass 80% threshold
    - Test: `python scripts/validate_rag.py` → must print "✅ RAG validation PASSED"
    
-4. ❌ **Create `scripts/alpaca_rate_limited.py`** (2 hours)
-   - Code provided in Section 6.2
-   - Token bucket rate limiter (40 req/min)
-   - Wrapper for alpaca-mcp-server
-   - Test: Make 50 requests in 1 min, verify rate limiting kicks in
-   
-5. ❌ **Add SessionManager class to `autonomous_build.py`** (1 hour)
+4. ❌ **Add SessionManager class to `autonomous_build.py`** (1 hour)
    - Code provided in Section 4.2
    - Auto-refresh every 2 min
    - Error recovery with retry logic
    - Test: Force session expiry, verify auto-refresh
    
-6. ❌ **Add FitnessTracker class to `autonomous_build.py`** (1 hour)
+5. ❌ **Add FitnessTracker class to `autonomous_build.py`** (1 hour)
    - Code provided in Section 8.1
    - Track Sharpe history
    - Auto-rollback on degradation
    - Test: Simulate degrading Sharpe (1.5 → 1.3 → 1.1), verify rollback to 1.5
    
-7. ❌ **Create `scripts/health_check.sh`** (1 hour)
+6. ❌ **Create `scripts/health_check.sh`** (1 hour)
    - Code provided in Section 7.2
    - Triple-fallback: HTTP → MCP → port
    - 3 retries per check
+   - **Updated:** Check 6 MCPs (removed port 8006)
    - Test: Kill one MCP, verify fallback detection
    
-8. ❌ **Update `scripts/start_all_mcps.sh`** (30 minutes)
+7. ❌ **Update `scripts/start_all_mcps.sh`** (30 minutes)
    - Add Knowledge RAG startup (port 8005)
-   - Add Alpaca MCP startup (port 8006)
+   - **Removed:** Alpaca MCP startup (port 8006)
    - Add session initialization calls
    - Increase health check timeout to 20s
-   - Test: Run script, verify all 7 MCPs start
+   - Test: Run script, verify all 6 MCPs start
    
-9. ❌ **Update `scripts/install_mcp_deps.sh`** (30 minutes)
+8. ❌ **Update `scripts/install_mcp_deps.sh`** (30 minutes)
    - Add: `pip install rank-bm25`
-   - Add: `pip install alpaca-mcp-server`
    - Add: `pip install chromadb`
    - Add: `pip install PyPDF2 beautifulsoup4`
+   - **Removed:** `pip install alpaca-mcp-server`
    - Test: Fresh Ubuntu VM, run script, verify all deps install
    
-10. ❌ **Update `.github/workflows/autonomous-build.yml`** (1 hour)
+9. ❌ **Update `.github/workflows/autonomous-build.yml`** (1 hour)
     - Add Knowledge RAG ingestion step (before Aider runs)
     - Add ChromaDB cache (Section 7.3)
-    - Add health checks for all 7 MCPs
-    - Update MCP startup to include ports 8005-8006
+    - **Updated:** Health checks for 6 MCPs (removed port 8006)
+    - Update MCP startup to include port 8005 only
     - Test: Trigger workflow, verify RAG available to Aider
 
 **Success Criteria:**
-- ✅ All 7 MCPs start successfully
+- ✅ All 6 MCPs start successfully
 - ✅ RAG validation ≥80% precision
 - ✅ Aider can query WorldQuant alphas during build
-- ✅ Alpaca rate limiting prevents quota exhaustion
+- ✅ QC MCP `get_history` tool available for data validation
 - ✅ Session management prevents auth failures
 - ✅ Health checks catch failures with triple-fallback
 - ✅ First strategy build uses informed knowledge
@@ -1009,6 +983,7 @@ for iteration in range(max_iterations):
 
 **Core Technologies:**
 - QuantConnect: https://www.quantconnect.com/docs/v2
+- QuantConnect MCP: https://github.com/QuantConnect/mcp-server
 - Supergateway: https://github.com/supercorp-ai/supergateway
 - FastMCP: https://github.com/jlowin/fastmcp
 - ChromaDB: https://www.trychroma.com/
@@ -1018,7 +993,6 @@ for iteration in range(max_iterations):
 - WorldQuant 101 Alphas: https://arxiv.org/pdf/1601.00991.pdf
 - DolphinDB Alpha Docs: https://docs.dolphindb.com/en/Tutorials/wq101alpha.html
 - QuantConnect Lean: https://github.com/QuantConnect/Lean
-- Alpaca MCP: https://github.com/alpacahq/alpaca-mcp-server
 
 **Research:**
 - LLM Quant Framework: https://arxiv.org/abs/2409.06289
@@ -1034,31 +1008,29 @@ for iteration in range(max_iterations):
 
 ## 13. Key Architectural Decisions
 
-### v4.0 vs v3.3
+### v4.1 vs v4.0
 
-**v3.3 (progressive enhancement):**
-- Basic autonomous builder Day 1
-- Add knowledge RAG "later when needed"
-- Port 8005-8006 marked as "future enhancement"
-- Assumption: Can iterate after first build
+**v4.0 (7 MCPs):**
+- Included Alpaca MCP (port 8006) for data validation
+- Assumption: External data provider needed
 
-**v4.0 (complete intelligence Day 1):**
-- Knowledge RAG is Day 1 requirement
-- Alpaca MCP is Day 1 requirement
-- All 7 MCPs operational before first build
-- Assumption: First build must be production-grade
+**v4.1 (6 MCPs):**
+- Removed Alpaca MCP due to Canada restriction
+- QC MCP already provides `get_history` tool
+- Zero external dependencies for data validation
+- Same 5-sec validation workflow
 
-**Rationale:** User requirement is clear - "we should be able to develop code with full intelligence on day 1. the stuff deferred to later days must be nice to haves."
+**Rationale:** Alpaca blocks Canadian residents. QuantConnect MCP already has built-in data access via `get_history` tool. No need for external data provider.
 
-### What Moved to Day 1
+### What Changed from v4.0
 
-| Feature | v3.3 Status | v4.0 Status | Justification |
+| Feature | v4.0 Status | v4.1 Status | Justification |
 |---------|-------------|-------------|---------------|
-| Knowledge RAG (8005) | Future | ✅ Day 1 | Without: naive strategies. With: WorldQuant-informed. Critical. |
-| Alpaca MCP (8006) | Optional | ✅ Day 1 | Without: 2-5 min iteration. With: 5 sec validation. Critical for development speed. |
-| Hybrid search | Nice-to-have | ✅ Day 1 | 80% precision gate ensures quality. |
-| Rate limiting | Basic | ✅ Day 1 | Token bucket prevents quota exhaustion. |
-| Session management | Manual | ✅ Day 1 | Auto-refresh prevents auth failures. |
+| Alpaca MCP (8006) | ✅ Day 1 | ❌ Removed | Canada restriction + QC has data access |
+| Data validation | Alpaca `get_bars` | QC `get_history` | Same functionality, zero external deps |
+| MCP count | 7 | 6 | Simpler stack, same capabilities |
+| External APIs | Alpaca API keys | None | Zero external dependencies |
+| Geographic restrictions | Alpaca Canada block | None | Works from anywhere |
 
 ### What Remains "Nice-to-Have"
 
@@ -1086,6 +1058,7 @@ for iteration in range(max_iterations):
 
 ## Version History
 
+- **v4.1** (2026-02-14): Removed Alpaca MCP (Canada restriction), use QC MCP `get_history` instead, 6-MCP stack
 - **v4.0** (2026-02-12): Day 1 complete intelligence, Knowledge RAG + Alpaca mandatory, implementation runbook restructured with full code, all additions integrated
 - **v3.3** (2026-02-12): Weakness-hardened, all 6 critical issues resolved with zero-cost solutions
 - **v3.2** (2026-02-11): 7 MCPs validated, GitHub Actions workflow created
@@ -1094,4 +1067,4 @@ for iteration in range(max_iterations):
 
 ---
 
-**Status:** ✅ Production-ready, Day 1 complete intelligence architecture. Full implementation code provided. Ready for 8-12 hour focused implementation sprint.
+**Status:** ✅ Production-ready, Day 1 complete intelligence architecture. 6-MCP stack with zero external dependencies. Full implementation code provided. Ready for 7-10 hour focused implementation sprint.
