@@ -435,4 +435,6 @@ if __name__ == '__main__':
     print("📊 Real-time build monitoring, cost analytics, MCP health")
     print("\n✅ Dashboard ready - open http://localhost:5000 in your browser\n")
     
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Production mode - debug should only be enabled in development
+    debug_mode = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    app.run(host='0.0.0.0', port=5000, debug=debug_mode)
