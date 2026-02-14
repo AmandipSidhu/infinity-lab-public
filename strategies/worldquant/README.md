@@ -67,3 +67,24 @@ class WorldQuantAlphaXXX(QCAlgorithm):
 - WorldQuant 101 Alphas: https://arxiv.org/pdf/1601.00991.pdf
 - DolphinDB Alpha Docs: https://docs.dolphindb.com/en/Tutorials/wq101alpha.html
 - QuantConnect Docs: https://www.quantconnect.com/docs/v2
+
+## Important Note on Template Customization
+
+**Templates alpha_011 through alpha_084** are currently scaffolded with placeholder logic.
+Each template needs to be customized with its specific WorldQuant alpha formula:
+
+1. Review the WorldQuant 101 Alphas paper: https://arxiv.org/pdf/1601.00991.pdf
+2. Find the specific formula for each alpha number
+3. Replace the placeholder Rebalance() logic with the actual alpha implementation
+4. Test backtest performance before deployment
+
+**Fully Implemented Templates:**
+- alpha_001_volume_price_correlation.py ✅ (complete with correlation calculation)
+- alpha_007_price_volume_reversion.py ✅ (complete with rank-based logic)
+- alpha_012_rank_reversion.py ✅ (complete with delta signals)
+- alpha_026_pairs_correlation.py ✅ (complete with pairs trading)
+
+**Templates Requiring Customization:**
+All other templates (alpha_011, 016, 018, 022, 024, 030, 031, 035, 041, 044, 049, 052, 056, 060, 068, 084) use generic SMA/RSI/BB logic as placeholders. Replace with actual alpha formulas.
+
+Use the fully implemented templates as reference for structure and coding patterns.

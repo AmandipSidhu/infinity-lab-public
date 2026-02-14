@@ -270,8 +270,13 @@ def notify_build_progress(
         "build_complete": "✅ Strategy complete: Sharpe {sharpe:.2f}, Drawdown {drawdown:.1f}%, Return {returns:.1f}%",
     }
     
-    template = messages.get(event, "📊 Build update: {event}")
-    message = template.format(event=event, **(details or {}))
+    template = messages.get(event, f"📊 Build update: {event}")
+    
+    # Only format if we have details and the template has placeholders
+    if details and '{' in template:
+        message = template.format(**(details or {}))
+    else:
+        message = template
     
     send_slack_notification(message, webhook_url)
 

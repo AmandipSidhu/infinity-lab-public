@@ -104,6 +104,10 @@ class RiskProfileAgent:
     Checks: position sizing, stop losses, drawdown limits, leverage
     """
     
+    # Leverage thresholds
+    MAX_SAFE_LEVERAGE = 5  # Maximum safe leverage multiplier
+    MAX_LEVERAGE_CHECK = 21  # Upper bound for leverage detection
+    
     def evaluate(self, strategy_spec: str) -> Tuple[EvaluationScore, str]:
         """Evaluate risk profile of strategy."""
         score = EvaluationScore.ACCEPTABLE
@@ -131,8 +135,9 @@ class RiskProfileAgent:
         
         # Check for leverage warnings
         if any(term in strategy_spec.lower() for term in ['leverage', 'margin', '2x', '3x']):
-            if 'high leverage' in strategy_spec.lower() or any(f'{i}x' in strategy_spec.lower() for i in range(5, 21)):
-                reasoning.append("❌ Excessive leverage detected (>5x)")
+            if ('high leverage' in strategy_spec.lower() or 
+                any(f'{i}x' in strategy_spec.lower() for i in range(self.MAX_SAFE_LEVERAGE, self.MAX_LEVERAGE_CHECK))):
+                reasoning.append(f"❌ Excessive leverage detected (>{self.MAX_SAFE_LEVERAGE}x)")
                 score = EvaluationScore.REJECT
             else:
                 reasoning.append("⚠️ Leverage mentioned - ensure risk controls")
