@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# MCP data
+~/.chromadb/
+~/.mcp_logs/
+~/.mcp_data/
+~/.acb_builds.db
+
+# Local configs
+.env
+.env.mcp
+*.local
+
+# Logs
+*.log
+logs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# macOS
+.DS_Store
+
+# Temporary files
+/tmp/
+*.tmp
+*.temp
+
+# Node modules (for MCP servers)
+node_modules/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Monitoring dashboard templates (generated at runtime)
+scripts/templates/
