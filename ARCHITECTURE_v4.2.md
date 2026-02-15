@@ -1,6 +1,6 @@
 # ARCHITECTURE v4.2 - Infinity Lab Autonomous Trading System
 
-**Date:** 2026-02-14 23:46 PST  
+**Date:** 2026-02-14 23:52 PST  
 **Status:** Phase 0 Foundation - Spec Validation & Code Review Enhancement  
 **Previous:** v4.1 (6-MCP Production Stack)
 
@@ -9,7 +9,7 @@
 **v4.1 approach:** 6-MCP stack with Day 1 complete intelligence  
 **v4.2 approach:** Add Phase 0 foundation BEFORE autonomous builds
 
-**Translation:** v4.1 discovered architecture drift (UNI-56). ACB workflow implements bare Aider instead of OpenHands, and lacks spec validation gates. v4.2 adds Phase 0 to prevent drift at design time.
+**Translation:** v4.1 discovered architecture drift (UNI-56). ACB workflow implements bare Aider without proper MCP integration wrapper, and lacks spec validation gates. v4.2 adds Phase 0 to prevent drift at design time and properly wraps Aider.
 
 ---
 
@@ -17,7 +17,7 @@
 
 ### NEW: Phase 0 Foundation (Pre-Build Gates)
 
-**Phase 0 runs BEFORE Aider/OpenHands starts coding:**
+**Phase 0 runs BEFORE Aider starts coding:**
 
 1. **Spec Validator** - Validates Linear issue quality
    - Completeness checker (signals, risk, data requirements)
@@ -39,18 +39,34 @@
    - Second opinion on generated strategies
    - Uses free Gemini tier (zero cost)
 
-### Architecture Drift Resolution
+### Architecture Drift Resolution (UNI-56 & UNI-57)
 
-**Problem (UNI-56):** ACB workflow uses bare Aider, not OpenHands
+**Problem:** ACB workflow uses bare Aider without proper MCP integration
 - ❌ Custom JSON config doesn't work with Aider
-- ❌ No MCP discovery mechanism
+- ❌ No MCP discovery mechanism in bare Aider
 - ❌ May not discover MCPs at all
 - 💰 $6 per failed build vs $3 (proper implementation)
 
-**Solution (v4.2):** Research OpenHands integration, document decision
+**OpenHands Evaluation Complete (UNI-57):**
+- ❌ Token inefficiency (5-10x overhead) exhausts free tiers
+- ❌ Cost incompatible: $200-500/month vs $5-10/month target
+- ❌ Agentic loops conflict with RAG-optimized architecture
+- ❌ Real-world performance parity (~19% vs Aider 18.9%)
+- ❌ SWE-Bench advantage only on curated benchmarks, not production
+
+**Decision: Aider CONFIRMED (not OpenHands)**
+- ✅ Token efficient - respects free tier limits
+- ✅ Git-integrated workflow matches specifications
+- ✅ RAG-compatible with Knowledge MCP
+- ✅ Proven cost model: $5-10/month
+- ✅ Works with 4-tier escalation (free→free→paid→opus)
+- ✅ BUT: Needs proper MCP integration wrapper (not bare pip install)
+
+**Solution (v4.2):** Create Aider MCP integration wrapper
 - Phase 0 spec validator prevents invalid builds
+- Aider wrapper enables MCP discovery (not bare install)
 - Code review catches issues before QC upload
-- Proper agent documented (OpenHands vs bare Aider)
+- Proper agent documented with cost analysis
 - All decisions tracked in Linear/GitHub (Gate 3)
 
 ### Updated Workflow with Phase 0
@@ -69,7 +85,7 @@ Phase 1: Autonomous Build (Existing)
     ↓
 4. autonomous_build.py starts
     ↓
-5. Agent (OpenHands or Aider) generates strategy code
+5. Aider (with MCP wrapper) generates strategy code
     ↓
 6. Pre-Commitator validates generated code         ← NEW
     ↓ (complexity, security, style)
@@ -658,9 +674,10 @@ jobs:
 **Why drift happened:**
 1. ❌ v2.9 analyzed and rejected bare Aider
 2. ❌ v4.0 full rewrite LOST v2.9 decisions
-3. ❌ OpenHands decision made but NEVER documented
-4. ❌ Copilot built from v4.0/v4.1 without verifying
-5. ❌ Gate 3 violation: Didn't check external memory
+3. ❌ User said "OpenHands was supposed to be better" (UNI-56)
+4. ❌ BUT: OpenHands was never actually decided on
+5. ❌ Copilot built from v4.0/v4.1 without verifying
+6. ❌ Gate 3 violation: Didn't check external memory
 
 ### 8.2 Prevention Strategy
 
@@ -673,7 +690,7 @@ jobs:
    - Auto-reject impossible requests
 
 2. **Before any code generation:**
-   - Verify agent decision (OpenHands vs Aider) from Linear/GitHub
+   - Verify agent decision (Aider confirmed) from Linear/GitHub
    - Check if previous architectural decisions exist
    - Cite sources (Gate 3 compliance)
 
@@ -682,21 +699,38 @@ jobs:
    - AI code review provides feedback
    - Human approval required for merge
 
-### 8.3 OpenHands Integration (Pending Research)
+### 8.3 Aider Confirmed (OpenHands Rejected)
 
-**Current status (v4.2):**
-- ❌ Bare Aider implemented (architecture drift)
-- ❌ OpenHands decision lost
-- ❌ MCP discovery not working
+**Decision made in [UNI-57](https://linear.app/universaltrading/issue/UNI-57):**
 
-**Next steps:**
-1. Research OpenHands GitHub Action
-2. Document MCP support in OpenHands
-3. Cost analysis (OpenHands vs Aider)
-4. Create ARCHITECTURE v4.3 with OpenHands
-5. Update autonomous-build.yml with proper agent
+**OpenHands evaluation completed - NOT suitable:**
+- ❌ Token inefficiency (5-10x overhead) exhausts free tiers
+- ❌ Cost incompatible: Would increase budget from $5-10/month to **$200-500/month**
+- ❌ Agentic loops conflict with RAG-optimized architecture
+- ❌ Real-world performance parity (~19% novel issue resolution vs Aider 18.9%)
+- ❌ SWE-Bench 53% advantage is curated benchmarks only, not production issues
 
-**Gate 3 requirement:** All decisions must be verified from Linear/GitHub before implementation.
+**Aider CONFIRMED as optimal:**
+- ✅ Token efficient - respects free tier limits (Gemini, GPT-4o GitHub Models)
+- ✅ Git-integrated workflow matches specifications
+- ✅ RAG-compatible with Knowledge MCP
+- ✅ Proven cost model: $5-10/month (vs $200-500 for OpenHands)
+- ✅ Works with 4-tier escalation (free→free→paid→opus)
+
+**Critical requirement:** Aider needs MCP integration wrapper (not bare pip install)
+
+**Implementation path:**
+1. Create `scripts/aider_wrapper.py` with MCP discovery
+2. Update `autonomous-build.yml` to use wrapper (not bare Aider)
+3. Test MCP access from Aider session
+4. Verify Knowledge RAG queries work during code generation
+
+**Cost analysis validated:**
+- Aider: $5-10/month (80% builds use free tiers)
+- OpenHands: $200-500/month (token overhead)
+- Decision: 20x-50x cost savings with Aider
+
+**Gate 3 compliance:** Decision documented in [UNI-57](https://linear.app/universaltrading/issue/UNI-57), cost analysis completed, external memory verified.
 
 ---
 
@@ -751,6 +785,7 @@ jobs:
 - Spec validator checks Linear issue before build
 - Pre-Commitator validates against documented standards
 - AI review verifies implementation matches spec
+- Aider vs OpenHands decision verified from [UNI-57](https://linear.app/universaltrading/issue/UNI-57)
 
 **Gate 3.5:** Before workflow/Actions fixes → require artifacts (exact failing log line, workflow path+repo, invoked script/command) or stop+fetch.
 
@@ -793,6 +828,11 @@ jobs:
 - AI-Powered Review (Multi-model): https://github.com/marketplace/actions/ai-powered-code-review
 - Code Review Quality: https://github.com/marketplace/actions/code-review-quality-action
 
+**Agent Decision:**
+- Aider vs OpenHands analysis: [UNI-57](https://linear.app/universaltrading/issue/UNI-57)
+- Cost comparison: $5-10/month (Aider) vs $200-500/month (OpenHands)
+- Performance parity: ~19% vs 18.9% on novel issues
+
 ### Core Technologies (from v4.1)
 
 - QuantConnect: https://www.quantconnect.com/docs/v2
@@ -801,6 +841,7 @@ jobs:
 - FastMCP: https://github.com/jlowin/fastmcp
 - ChromaDB: https://www.trychroma.com/
 - BM25: https://github.com/dorianbrown/rank_bm25
+- Aider: https://aider.chat/
 
 ---
 
@@ -813,6 +854,7 @@ jobs:
 - No spec validation
 - No pre-commit quality gates
 - Architecture drift occurred (UNI-56)
+- Bare Aider (no MCP integration)
 
 **v4.2 (6 MCPs + Phase 0):**
 - Phase 0 foundation added
@@ -821,8 +863,10 @@ jobs:
 - AI code review provides feedback
 - Architecture drift prevention
 - Gate 3/3.5/4 compliance enforced
+- **Aider confirmed (not OpenHands) per UNI-57**
+- Aider MCP integration wrapper required
 
-**Rationale:** v4.1 discovered architecture drift. v4.2 adds Phase 0 to prevent drift at design time.
+**Rationale:** v4.1 discovered architecture drift. v4.2 adds Phase 0 to prevent drift at design time and properly integrates Aider with MCPs.
 
 ### What Changed from v4.1
 
@@ -834,6 +878,8 @@ jobs:
 | Architecture drift | ❌ Occurred | ✅ Prevented | Gate 3 enforcement |
 | Invalid build cost | $3-5 wasted | $0 (rejected) | Save compute |
 | Review time | 100% baseline | 55% baseline | 45% faster |
+| Agent decision | ❌ Unclear | ✅ Aider (UNI-57) | Cost: $5-10 vs $200-500 |
+| MCP integration | ❌ Bare Aider | ✅ Aider wrapper | Proper MCP discovery |
 
 ### Implementation Priority
 
@@ -847,7 +893,7 @@ jobs:
 
 ## Version History
 
-- **v4.2** (2026-02-14): Phase 0 foundation added (spec validator, Pre-Commitator, AI code review), architecture drift prevention, Gate 3/3.5/4 compliance
+- **v4.2** (2026-02-14): Phase 0 foundation added (spec validator, Pre-Commitator, AI code review), architecture drift prevention, Gate 3/3.5/4 compliance, **Aider confirmed (not OpenHands) per UNI-57**, cost analysis $5-10/month vs $200-500/month
 - **v4.1** (2026-02-14): Removed Alpaca MCP (Canada restriction), use QC MCP `get_history` instead, 6-MCP stack
 - **v4.0** (2026-02-12): Day 1 complete intelligence, Knowledge RAG + Alpaca mandatory
 - **v3.3** (2026-02-12): Weakness-hardened, 6 critical issues resolved
@@ -863,11 +909,12 @@ jobs:
 1. Implement Phase 0 (spec validator, Pre-Commitator, AI review)
 2. Test with invalid spec → verify rejection
 3. Test with bad code → verify quality gate catches
-4. Research OpenHands integration for v4.3
+4. Create Aider MCP integration wrapper (not bare install)
 5. Document all decisions in Linear/GitHub (Gate 3)
 
 **Related Issues:**
 - [UNI-59](https://linear.app/universaltrading/issue/UNI-59): CONTEXT_SEED for nuclear rebuild
+- [UNI-57](https://linear.app/universaltrading/issue/UNI-57): Aider vs OpenHands decision & cost analysis
 - [UNI-56](https://linear.app/universaltrading/issue/UNI-56): Architecture drift blocker
 - [UNI-58](https://linear.app/universaltrading/issue/UNI-58): Spec validator implementation
 - [UNI-50](https://linear.app/universaltrading/issue/UNI-50): Previous CONTEXT_SEED (Done)
