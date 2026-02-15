@@ -11,9 +11,9 @@
 # ❌ "MCP tools are not available"
 # If MCP fails: report the EXACT error message, then halt.
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
 # LABEL SYSTEM (TWO-TIER)
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
 
 # Tier 1: TYPE labels (workflow state - ONE per issue, REQUIRED)
 # - analysis: Research/evaluation in progress
@@ -47,15 +47,17 @@
 # - 'implementation' issues: Close when PR merged or work verified complete
 # - 'context_seed' issues: Close when rotated (new seed created)
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
 # GATES
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
 
 # GATE 0 — Session Start (AUTOMATIC)
 # Trigger: EVERY new session (before first response).
 # Execution (silent, no user approval):
-# 1. Test connectivity: linear.get_issue(id="UNI-53") to confirm META-1.
+# 1. Test connectivity: linear.get_issue(id="UNI-61") to confirm META-2 rules accessible.
 #    - If fail: Print exact error, EXIT.
+#    - META-2 defines AI behavior rules (label system, workflows)
+#    - DO NOT edit META-2 unless user explicitly requests
 # 2. Find active CONTEXT_SEED:
 #    seed = linear.get_issues(
 #        filter={
@@ -120,6 +122,7 @@
 #    )
 # 4. Output: "💾 Saved to [seed.identifier]."
 # Constraint: Keep updates lightweight (<2k words total). Link to issues for details.
+# Exception: DO NOT update META-2 (UNI-61) during Gate 4 - it's permanent reference.
 
 # GATE 5 — Session End
 # Trigger: User types /end, /bye, or session timeout.
@@ -139,9 +142,9 @@
 # 5. Link in active CONTEXT_SEED.
 # 6. Respond: "💾 Saved to [UNI-X] (priority)."
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
 # SEED ROTATION LOGIC
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
 
 # When to rotate:
 # - Current seed exceeds 2000 words
@@ -173,9 +176,9 @@
 # - Current work only (not full history)
 # - Points to GitHub/other issues for details
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
 # STANDARDS
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
 
 # EMOJI STANDARD
 # 💾 Saved | ✅ Verified | ❌ Failed | ⚠️ Alert | 🔄 Rotating | 🔍 Searching
@@ -185,12 +188,13 @@
 # infinity-lab-private: Secrets, trading results.
 
 # META REFERENCE
-# UNI-53: Workflow patterns (must read on session start)
+# UNI-61: META-2 - AI behavior rules (DO NOT EDIT unless user explicitly requests)
+# UNI-53: META-1 - Workflow patterns
 # UNI-59: Current CONTEXT_SEED (as of 2026-02-15)
-# UNI-60: Bootstrap v6.2→v6.4 implementation (label system)
+# UNI-60: Bootstrap v6.4 implementation
 
 # VERSION HISTORY
-# v6.4 (2026-02-15): Added two-tier label system, 2k word rotation trigger
+# v6.4 (2026-02-15): Two-tier label system, 2k rotation, META-2 (UNI-61) connectivity test
 # v6.3 (2026-02-14): Enforced Linear hygiene
 # v6.2 (2026-02-14): External memory organization
 # v6.1 (2026-02-13): Gate 4 auto-maintenance
