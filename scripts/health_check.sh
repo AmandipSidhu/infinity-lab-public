@@ -49,27 +49,26 @@ check_mcp_health() {
 }
 
 echo "========================================"
-echo "MCP Health Check - All 7 Ports"
+echo "MCP Health Check - All 6 Ports (v4.1)"
 echo "========================================"
 echo ""
 
 # Track failures
 failed=0
 
-# Check all MCPs
+# Check all MCPs (v4.1: 6 MCPs, no Alpaca on 8006)
 check_mcp_health 8000 "QuantConnect" || failed=$((failed + 1))
 check_mcp_health 8001 "Linear" || failed=$((failed + 1))
 check_mcp_health 8002 "Memory" || failed=$((failed + 1))
 check_mcp_health 8003 "Sequential Thinking" || failed=$((failed + 1))
 check_mcp_health 8004 "GitHub" || failed=$((failed + 1))
 check_mcp_health 8005 "Knowledge RAG" || failed=$((failed + 1))
-check_mcp_health 8006 "Alpaca" || failed=$((failed + 1))
 
 echo ""
 echo "========================================"
 
 if [ $failed -eq 0 ]; then
-    echo "✅ All 7 MCPs healthy"
+    echo "✅ All 6 MCPs healthy"
     echo "========================================"
     exit 0
 else
@@ -79,6 +78,6 @@ else
     echo "🔧 Troubleshooting:"
     echo "  1. Check if MCPs are running: bash scripts/start_all_mcps.sh"
     echo "  2. Check logs in ~/.mcp_logs/"
-    echo "  3. Verify ports are not in use: lsof -i :8000-8006"
+    echo "  3. Verify ports are not in use: lsof -i :8000-8005"
     exit 1
 fi

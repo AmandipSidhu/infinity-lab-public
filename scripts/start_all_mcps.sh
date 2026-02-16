@@ -1,7 +1,7 @@
 #!/bin/bash
-# start_all_mcps.sh - Start all 7 MCP servers (v4.0 Day 1)
-# Part of Infinity 5 Bootstrap v6.1
-# Related: UNI-50, ARCHITECTURE_v4.0.md
+# start_all_mcps.sh - Start all 6 MCP servers (v4.1 Day 1)
+# Part of Infinity 5 Bootstrap v6.2
+# Related: UNI-52, UNI-54, ARCHITECTURE_v4.0.md
 
 set -e
 
@@ -25,8 +25,6 @@ else
     echo "  QUANTCONNECT_USER_ID=your_id"
     echo "  QUANTCONNECT_API_TOKEN=your_token"
     echo "  GITHUB_TOKEN=your_token"
-    echo "  ALPACA_API_KEY=your_key (optional for testing)"
-    echo "  ALPACA_API_SECRET=your_secret (optional for testing)"
     exit 1
 fi
 
@@ -34,7 +32,7 @@ LOG_DIR="$HOME/mcp-logs"
 DATA_DIR="$HOME/mcp-data"
 mkdir -p "$LOG_DIR" "$DATA_DIR"
 
-echo "🚀 Starting all 7 MCP servers (v4.0 Day 1)..."
+echo "🚀 Starting all 6 MCP servers (v4.1 Day 1)..."
 echo ""
 
 # Port 8000: QuantConnect MCP (Docker stdio → Supergateway → streamableHttp)
@@ -92,29 +90,16 @@ echo "    Auth: Bearer ${GITHUB_TOKEN:0:8}..."
 echo "✅ GitHub MCP configured (remote)"
 echo ""
 
-# Port 8005: Knowledge RAG MCP (NEW - Day 1 Critical)
-echo "[6/7] Starting Knowledge RAG MCP on port 8005..."
+# Port 8005: Knowledge RAG MCP (Day 1 Critical)
+echo "[6/6] Starting Knowledge RAG MCP on port 8005..."
 python3 scripts/knowledge_mcp_server.py > "${LOG_DIR}/knowledge-rag-mcp.log" 2>&1 &
 KNOWLEDGE_PID=$!
 
 echo "✅ Knowledge RAG MCP started (FastMCP, PID: $KNOWLEDGE_PID)"
 echo ""
 
-# Port 8006: Alpaca MCP with Rate Limiting (NEW - Day 1 Critical)
-echo "[7/7] Starting Alpaca MCP on port 8006..."
-if [ -n "$ALPACA_API_KEY" ]; then
-    export ALPACA_API_KEY
-    export ALPACA_API_SECRET
-    export ALPACA_BASE_URL="${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}"
-    python3 scripts/alpaca_rate_limited.py > "${LOG_DIR}/alpaca-mcp.log" 2>&1 &
-    ALPACA_PID=$!
-    echo "✅ Alpaca MCP started (rate limited, PID: $ALPACA_PID)"
-else
-    echo "⚠️  Alpaca MCP skipped (ALPACA_API_KEY not set)"
-    echo "    Set ALPACA_API_KEY in ~/.env.mcp to enable"
-    ALPACA_PID="N/A"
-fi
-echo ""
+# v4.1: Alpaca removed (Canada restriction per UNI-54)
+# QC MCP provides get_history for data validation
 
 echo "⏳ Waiting 20 seconds for servers to initialize..."
 sleep 20
@@ -133,9 +118,11 @@ echo "  - Memory MCP (8002): $MEMORY_PID"
 echo "  - Sequential Thinking (8003): $THINKING_PID"
 echo "  - GitHub MCP (8004): Remote"
 echo "  - Knowledge RAG (8005): $KNOWLEDGE_PID"
-echo "  - Alpaca MCP (8006): $ALPACA_PID"
 echo ""
 echo "Logs: ${LOG_DIR}/"
 echo "Data: ${DATA_DIR}/"
+echo ""
+echo "💡 Session management: Auto-refresh every 2 min"
+echo "💡 Data validation: QC MCP get_history (no external provider needed)"
 echo ""
 echo "To stop: ./scripts/stop_all_mcps.sh"
