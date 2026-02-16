@@ -1,6 +1,6 @@
 # ARCHITECTURE v4.2 - Infinity Lab Autonomous Trading System
 
-**Date:** 2026-02-15 15:36 PST  
+**Date:** 2026-02-15 15:58 PST  
 **Status:** Phase 0 Foundation - Spec Validation & Code Review Enhancement  
 **Previous:** v4.1 (6-MCP Production Stack)
 
@@ -33,11 +33,11 @@
    - Parameter count (< 5 params)
    - Runs AFTER code generation, BEFORE QC upload
 
-3. **AI Code Review** - Reviews autonomous build PRs
-   - **GitHub Copilot subscription ($10/month)**
-   - Repository Rulesets for automated reviews
-   - Covers BOTH building ACB (Use Case 1) AND reviewing output (Use Case 2)
-   - Cost-effective: Single subscription for dual purpose
+3. **Human Code Review** - Manual review of autonomous build PRs
+   - Required for all trading strategies
+   - Validates against Linear issue spec
+   - Checks trading logic correctness
+   - **Optional:** GitHub Copilot ($10/month) for Phase 0 setup assistance only
 
 ### Architecture Drift Resolution (UNI-56 & UNI-57)
 
@@ -89,7 +89,7 @@ Phase 1: Autonomous Build (Existing)
     ↓
 6. Pre-Commitator validates generated code         ← NEW
     ↓ (complexity, security, style)
-7. If fails → Model escalation (Gemini → GPT-4o → Opus)
+7. If fails → Model escalation (Gemini → GPT-4o → GPT-4o paid → Opus)
     ↓ (if passes)
 8. QC MCP uploads strategy
     ↓
@@ -99,7 +99,7 @@ Phase 1: Autonomous Build (Existing)
     ↓
 11. Multi-agent evaluation (from PR #23)
     ↓
-12. Copilot Repository Ruleset reviews PR          ← NEW
+12. Human reviews PR
     ↓
 13. Results posted to Linear
 ```
@@ -140,9 +140,11 @@ Phase 1: Autonomous Build (Existing)
 |------|---------|------|------|
 | Spec Validator | Validate Linear issue quality | Before build starts | $0 (free Gemini) |
 | Pre-Commitator | Validate generated code | After code gen, before QC | $0 (open source) |
-| **Copilot Subscription** | **Build ACB + Review output** | **Both use cases** | **$10/month** |
+| Human Review | Validate trading strategies | After backtest | $0 (required anyway) |
 
-**Total Stack Cost:** $10/month (Copilot only)
+**Total Stack Cost:** $0/month
+
+**Optional (Phase 0 setup only):** GitHub Copilot ($10/month) for IDE assistance during implementation, can be cancelled after infrastructure is stable.
 
 ---
 
@@ -160,7 +162,7 @@ Phase 1: Autonomous Build (Existing)
 
 ### 3.2 Why This Matters for ACB
 
-**Current risk:** Copilot might build strategies that don't match Linear issue specs
+**Current risk:** Aider might build strategies that don't match Linear issue specs
 
 **Spec validation solves:**
 - ✅ Catches ambiguous requirements BEFORE coding (34% improvement in clarity)
@@ -537,111 +539,7 @@ echo "✅ Pre-Commitator installed"
 
 ---
 
-## 5. Phase 0: AI Code Review (NEW - COST-EFFECTIVE)
-
-### 5.1 Purpose
-
-**Two use cases with single subscription:**
-1. **Building ACB (Use Case 1):** Use Copilot to implement autonomous builder
-2. **Reviewing output (Use Case 2):** Automated PR reviews of generated strategies
-
-**Cost:** $10/month covers BOTH use cases
-
-### 5.2 Implementation: Repository Rulesets (Not Actions)
-
-**Enable Copilot code review via Repository Rulesets:**
-
-**GitHub repo settings → Rulesets → New ruleset:**
-
-```yaml
-Name: "Autonomous Build Review"
-Target branches: ["main"]
-Bypass list: []
-
-Rules:
-  - Require code review from Copilot
-    Focus areas:
-      - Trading logic correctness
-      - Risk management implementation
-      - Indicator calculations
-      - QC API best practices
-      - Performance considerations
-```
-
-**Copilot will automatically:**
-- Review every PR from autonomous builds
-- Comment on specific code sections
-- Suggest optimizations
-- Flag potential issues
-- Check against Linear issue spec
-
-### 5.3 Custom Instructions for Trading
-
-**Create `.github/copilot-instructions.md`:**
-
-```markdown
-# Copilot Instructions for Trading Strategy Review
-
-## Focus Areas
-
-### 1. Trading Logic
-- Entry/exit signals match Linear issue specification
-- Indicator calculations are correct (e.g., RSI, MACD, VWAP)
-- No magic numbers (all thresholds configurable)
-- Logic is deterministic (reproducible backtest results)
-
-### 2. Risk Management
-- Position sizing implemented as specified
-- Stop-loss thresholds are enforced
-- Max drawdown limits are respected
-- Portfolio exposure is controlled
-
-### 3. QC API Usage
-- Use native QC indicators when available (not custom)
-- Correct data resolution (Daily, Hourly, etc.)
-- Proper universe selection logic
-- Efficient history requests (not excessive)
-
-### 4. Performance
-- Avoid O(n²) or higher complexity loops
-- Cache computed values when possible
-- Use vectorized operations (NumPy/Pandas)
-- Minimize API calls in OnData()
-
-### 5. Code Quality
-- Functions < 100 lines
-- Parameters < 5 per function
-- Cyclomatic complexity < 10
-- Clear variable names (not x, y, z)
-```
-
-### 5.4 Cost Comparison: Copilot vs Custom GPT-4o
-
-**From UNI-42 analysis (Feb 8, 2026):**
-
-| Option | Setup | Monthly Cost | Features |
-|--------|-------|--------------|----------|
-| **Copilot** | Repository Ruleset (5 min) | **$10/month** | • Native GitHub integration<br>• Auto-review every PR<br>• ALSO get: code suggestions in IDE, chat<br>• **Covers building ACB too** |
-| **Custom GPT-4o** | Python script (2 hours) | ~$11/month (22 builds × $0.50) | • Custom prompts<br>• On-demand only<br>• More implementation work |
-
-**Verdict: Copilot is cost-effective**
-- Single $10/month subscription covers BOTH:
-  1. Building ACB infrastructure (Use Case 1)
-  2. Reviewing generated strategies (Use Case 2)
-- Native integration = less maintenance
-- Can add custom focus via `.github/copilot-instructions.md`
-
-### 5.5 Success Criteria
-
-- ✅ Copilot reviews every autonomous build PR
-- ✅ Catches logic errors before human review
-- ✅ Provides actionable feedback
-- ✅ Validates against Linear issue spec
-- ✅ Single $10/month subscription covers both use cases
-
----
-
-## 6. Updated Implementation Runbook
+## 5. Updated Implementation Runbook
 
 ### Phase 0: Foundation (NEW - 4-6 hours)
 
@@ -660,30 +558,29 @@ Rules:
    - Download run_quality_check.sh
    - Test: Run on sample Python file, verify checks
    
-3. ❌ **Enable Copilot Repository Ruleset** (15 minutes)
-   - Subscribe to GitHub Copilot ($10/month)
-   - Create `.github/copilot-instructions.md` (Section 5.3)
-   - Enable Repository Ruleset in GitHub settings
-   - Test: Create test PR, verify Copilot review posted
-   
-4. ❌ **Update `.github/workflows/autonomous-build.yml`** (1 hour)
+3. ❌ **Update `.github/workflows/autonomous-build.yml`** (1 hour)
    - Add spec validation step (Section 3.5)
    - Add Pre-Commitator validation (Section 4.4)
    - Add model escalation on quality failures
    - Test: Trigger workflow, verify all gates execute
    
-5. ❌ **Create validation test suite** (1 hour)
+4. ❌ **Create validation test suite** (1 hour)
    - Test spec validator with invalid specs
    - Test Pre-Commitator with bad code
-   - Test Copilot review with sample PR
    - Gate: All tests must pass
+
+5. ❌ **Create Aider MCP integration wrapper** (1.5 hours)
+   - Enable MCP discovery (not bare pip install)
+   - Test MCP access from Aider session
+   - Verify Knowledge RAG queries work
 
 **Success Criteria:**
 - ✅ Invalid specs are rejected before build starts
 - ✅ Poor quality code triggers model escalation
-- ✅ Copilot provides actionable feedback on PRs
-- ✅ Total cost: $10/month (Copilot only)
+- ✅ Total cost: $0/month
 - ✅ Spec validation ≥80% precision
+
+**Optional:** GitHub Copilot ($10/month) for IDE assistance during implementation. Can be cancelled after infrastructure is stable.
 
 ### Phase 1: Day 1 Core (7-10 hours) - From v4.1
 
@@ -691,7 +588,7 @@ Rules:
 
 ---
 
-## 7. Phase 0 vs Phase 1 Comparison
+## 6. Phase 0 vs Phase 1 Comparison
 
 | Capability | Without Phase 0 | With Phase 0 | Benefit |
 |------------|-----------------|--------------|----------|
@@ -701,15 +598,14 @@ Rules:
 | Review time | 100% baseline | 55% of baseline | 45% faster |
 | Requirement defects | 100% baseline | 73% of baseline | 27% fewer defects |
 | Architecture drift | Happens frequently | Prevented at design | Zero drift |
-| Code review cost | N/A or $11/month | **$10/month (dual use)** | **Cost-effective** |
 
-**ROI:** Phase 0 costs 4-6 hours implementation + $10/month, saves 45% review time ongoing.
+**ROI:** Phase 0 costs 4-6 hours implementation + $0/month, saves 45% review time ongoing.
 
 ---
 
-## 8. Architecture Drift Prevention (UNI-56 Resolution)
+## 7. Architecture Drift Prevention (UNI-56 Resolution)
 
-### 8.1 Root Cause Analysis
+### 7.1 Root Cause Analysis
 
 **Why drift happened:**
 1. ❌ v2.9 analyzed and rejected bare Aider
@@ -719,7 +615,7 @@ Rules:
 5. ❌ Copilot built from v4.0/v4.1 without verifying
 6. ❌ Gate 3 violation: Didn't check external memory
 
-### 8.2 Prevention Strategy
+### 7.2 Prevention Strategy
 
 **Phase 0 spec validator prevents drift:**
 
@@ -736,10 +632,9 @@ Rules:
 
 3. **After code generation:**
    - Pre-Commitator validates quality
-   - Copilot review provides feedback
-   - Human approval required for merge
+   - Human review required for merge
 
-### 8.3 Aider Confirmed (OpenHands Rejected)
+### 7.3 Aider Confirmed (OpenHands Rejected)
 
 **Decision made in [UNI-57](https://linear.app/universaltrading/issue/UNI-57):**
 
@@ -755,7 +650,7 @@ Rules:
 - ✅ Git-integrated workflow matches specifications
 - ✅ RAG-compatible with Knowledge MCP
 - ✅ Proven cost model: $5-10/month (vs $200-500 for OpenHands)
-- ✅ Works with 4-tier escalation (free→free→paid→opus)
+- ✅ Works with 4-tier escalation (Gemini free → GPT-4o free → GPT-4o/4.1 paid → Opus)
 
 **Critical requirement:** Aider needs MCP integration wrapper (not bare pip install)
 
@@ -774,7 +669,7 @@ Rules:
 
 ---
 
-## 9. Cost Analysis (Updated)
+## 8. Cost Analysis (Updated)
 
 ### Per Build with Phase 0
 
@@ -801,20 +696,11 @@ Rules:
 - 12 medium: 12 × $0.40 = $4.80
 - 3 hard: 3 × $2.05 = $6.15
 - 1 escalation: 1 × $4.05 = $4.05
-- **Build cost: ~$40.60/month**
-- **Copilot subscription: $10/month**
-- **Total: ~$50.60/month**
+- **Total: ~$40.60/month**
 
-**Cost change:** +$5.60/month, but:
-- 45% faster review time (saves human hours)
-- 27% fewer requirement defects
-- Copilot ALSO covers building ACB (Use Case 1)
-- No custom code review implementation needed
+**Cost change:** -$4.40/month (saves money!)
 
 ### Infrastructure
-
-**$10/month:**
-- **GitHub Copilot** ($10/month - covers both building + reviewing)
 
 **$0/month:**
 - GitHub Actions (2000 min/month free)
@@ -824,18 +710,20 @@ Rules:
 - All MCPs (open source)
 - ChromaDB (local)
 
-**Total infrastructure: $10/month**
+**Total infrastructure: $0/month**
+
+**Optional (Phase 0 setup only):**
+- GitHub Copilot ($10/month) - IDE assistance during 4-6 hour implementation, cancel after stable
 
 ---
 
-## 10. Bootstrap v6.1 Gate Compliance
+## 9. Bootstrap v6.1 Gate Compliance
 
 **Gate 3:** Before specs/test criteria/technical details/past decisions → verify from GitHub/Linear and cite source.
 
 ✅ **Phase 0 enforces Gate 3:**
 - Spec validator checks Linear issue before build
 - Pre-Commitator validates against documented standards
-- Copilot verifies implementation matches spec
 - Aider vs OpenHands decision verified from [UNI-57](https://linear.app/universaltrading/issue/UNI-57)
 
 **Gate 3.5:** Before workflow/Actions fixes → require artifacts (exact failing log line, workflow path+repo, invoked script/command) or stop+fetch.
@@ -856,7 +744,7 @@ Rules:
 
 ---
 
-## 11. References
+## 10. References
 
 ### Phase 0 Research
 
@@ -873,11 +761,6 @@ Rules:
 - QuantConnect Guide: https://chiayong.com/articles/quant-trading-guide
 - Systematic Trading: https://www.quantinsti.com/articles/systematic-trading/
 - Strategy Validation: https://www.reddit.com/r/quant/comments/1kn3e9v/validation_of_a_systematic_trading_strategy/
-
-**Code Review:**
-- UNI-42 Cost Analysis: https://linear.app/universaltrading/issue/UNI-42
-- Copilot vs Custom: $10/month vs $11/month
-- Repository Rulesets: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets
 
 **Agent Decision:**
 - Aider vs OpenHands analysis: [UNI-57](https://linear.app/universaltrading/issue/UNI-57)
@@ -896,7 +779,7 @@ Rules:
 
 ---
 
-## 12. Key Architectural Decisions
+## 11. Key Architectural Decisions
 
 ### v4.2 vs v4.1
 
@@ -911,13 +794,13 @@ Rules:
 - Phase 0 foundation added
 - Spec validator prevents invalid builds
 - Pre-Commitator validates code quality
-- **Copilot subscription ($10/month) covers building + reviewing**
 - Architecture drift prevention
 - Gate 3/3.5/4 compliance enforced
 - **Aider confirmed (not OpenHands) per UNI-57**
 - Aider MCP integration wrapper required
+- **$0/month infrastructure cost (Copilot optional for setup only)**
 
-**Rationale:** v4.1 discovered architecture drift. v4.2 adds Phase 0 to prevent drift at design time and properly integrates Aider with MCPs. Copilot subscription is cost-effective for dual use.
+**Rationale:** v4.1 discovered architecture drift. v4.2 adds Phase 0 to prevent drift at design time and properly integrates Aider with MCPs.
 
 ### What Changed from v4.1
 
@@ -925,18 +808,18 @@ Rules:
 |---------|-------------|-------------|---------------|
 | Spec validation | ❌ None | ✅ Phase 0 | Prevent invalid builds |
 | Code quality gates | ❌ None | ✅ Pre-Commitator | Catch bugs before QC |
-| AI code review | ❌ None | ✅ **Copilot ($10/mo)** | **Dual use: build + review** |
+| AI code review | ❌ None | ✅ Human (required) | Trading strategies need human approval |
 | Architecture drift | ❌ Occurred | ✅ Prevented | Gate 3 enforcement |
 | Invalid build cost | $3-5 wasted | $0 (rejected) | Save compute |
 | Review time | 100% baseline | 55% baseline | 45% faster |
 | Agent decision | ❌ Unclear | ✅ Aider (UNI-57) | Cost: $5-10 vs $200-500 |
 | MCP integration | ❌ Bare Aider | ✅ Aider wrapper | Proper MCP discovery |
-| **Monthly cost** | **$0** | **$10 (Copilot)** | **Covers 2 use cases** |
+| **Monthly cost** | **$45** | **$40.60** | **Saves $4.40/month** |
 
 ### Implementation Priority
 
 **Must complete in order:**
-1. **Phase 0** (4-6 hours) - Spec validation, quality gates, Copilot setup
+1. **Phase 0** (4-6 hours) - Spec validation, quality gates, Aider wrapper
 2. **Phase 1** (7-10 hours) - Day 1 MCP stack (from v4.1)
 3. **Phase 2** (Optional) - Efficiency enhancements
 4. **Phase 3** (Optional) - Advanced research
@@ -945,7 +828,8 @@ Rules:
 
 ## Version History
 
-- **v4.2** (2026-02-15): **Copilot code review confirmed cost-effective ($10/month covers building ACB + reviewing output)**, updated Section 5 with Repository Rulesets approach, single subscription for dual use
+- **v4.2** (2026-02-15): **Removed Copilot from required infrastructure** - Optional for Phase 0 setup only, can be cancelled after infrastructure is stable. $0/month ongoing cost.
+- **v4.2** (2026-02-15): Copilot code review confirmed cost-effective ($10/month covers building ACB + reviewing output), updated Section 5 with Repository Rulesets approach
 - **v4.2** (2026-02-14): Phase 0 foundation added (spec validator, Pre-Commitator, AI code review), architecture drift prevention, Gate 3/3.5/4 compliance, **Aider confirmed (not OpenHands) per UNI-57**, cost analysis $5-10/month vs $200-500/month
 - **v4.1** (2026-02-14): Removed Alpaca MCP (Canada restriction), use QC MCP `get_history` instead, 6-MCP stack
 - **v4.0** (2026-02-12): Day 1 complete intelligence, Knowledge RAG + Alpaca mandatory
@@ -956,13 +840,13 @@ Rules:
 
 ---
 
-**Status:** ✅ Phase 0 foundation specified with cost-effective Copilot subscription ($10/month covers both Use Case 1 and Use Case 2). Ready for 4-6 hour implementation sprint. Complete Phase 0 BEFORE v4.1 Day 1 core.
+**Status:** ✅ Phase 0 foundation specified with $0/month ongoing cost (Copilot optional for setup only). Ready for 4-6 hour implementation sprint. Complete Phase 0 BEFORE v4.1 Day 1 core.
 
 **Next Steps:**
-1. Implement Phase 0 (spec validator, Pre-Commitator, Copilot Ruleset)
+1. Implement Phase 0 (spec validator, Pre-Commitator, Aider wrapper)
 2. Test with invalid spec → verify rejection
 3. Test with bad code → verify quality gate catches
-4. Create Aider MCP integration wrapper (not bare install)
+4. Optional: Use Copilot during setup for IDE assistance
 5. Document all decisions in Linear/GitHub (Gate 3)
 
 **Related Issues:**
@@ -970,5 +854,4 @@ Rules:
 - [UNI-57](https://linear.app/universaltrading/issue/UNI-57): Aider vs OpenHands decision & cost analysis
 - [UNI-56](https://linear.app/universaltrading/issue/UNI-56): Architecture drift blocker
 - [UNI-58](https://linear.app/universaltrading/issue/UNI-58): Spec validator implementation
-- [UNI-42](https://linear.app/universaltrading/issue/UNI-42): Copilot vs custom AI review cost comparison
 - [UNI-50](https://linear.app/universaltrading/issue/UNI-50): Previous CONTEXT_SEED (Done)
