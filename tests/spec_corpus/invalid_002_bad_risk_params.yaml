@@ -1,0 +1,62 @@
+# invalid_002_bad_risk_params.yaml
+# Expected errors: SVR-E027 (stop_loss > 0.20), SVR-E028 (max_position_size > 1.0),
+#                  SVR-E029 (max_leverage > 3.0)
+# Expected warnings: SVR-W016 (max_drawdown_threshold > 0.30)
+
+metadata:
+  name: "Reckless Leveraged Breakout"
+  version: "0.1.0"
+  author: "Risk Taker"
+  created_at: "2026-02-01"
+  description: >
+    A highly leveraged breakout strategy with dangerously wide stop-loss
+    and oversized positions. This spec intentionally violates risk rules.
+
+strategy:
+  type: "breakout"
+
+  universe:
+    symbols:
+      - "NVDA"
+      - "AMD"
+    resolution: "daily"
+
+  signals:
+    entry:
+      conditions:
+        - "price breaks above 20-day high by 3%"
+        - "volume is 150% of 20-day average"
+      logic: "AND"
+    exit:
+      conditions:
+        - "price drops 25% below entry"
+        - "close below 10-day SMA"
+      logic: "OR"
+
+  risk_management:
+    position_sizing: "fixed"
+    max_position_size: 1.50    # ERROR SVR-E028: > 1.0
+    stop_loss: 0.25            # ERROR SVR-E027: > 0.20
+    take_profit: 0.50
+    max_drawdown: 0.40
+    max_leverage: 5.0          # ERROR SVR-E029: > 3.0
+
+  performance_targets:
+    sharpe_ratio_min: 1.0
+    win_rate_min: 0.55
+    max_drawdown_threshold: 0.40  # WARN SVR-W016: > 0.30
+
+  backtesting:
+    start_date: "2019-01-01"
+    end_date: "2024-12-31"
+    initial_capital: 100000
+    min_trades: 300
+    benchmark: "SPY"
+
+  data_requirements:
+    resolution: "daily"
+    min_history_days: 252
+    indicators:
+      - "20-day high"
+      - "SMA(10)"
+      - "volume SMA(20)"
