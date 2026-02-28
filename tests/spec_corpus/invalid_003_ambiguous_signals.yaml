@@ -1,0 +1,61 @@
+# invalid_003_ambiguous_signals.yaml
+# Expected errors: SVR-E030 (ambiguous language in entry conditions)
+# Expected warnings: SVR-W011 (min_trades < 1000), SVR-W008 (no benchmark),
+#                    SVR-W023 (no numeric threshold in some exit conditions)
+
+metadata:
+  name: "Feel-Good Momentum"
+  version: "1.0.0"
+  author: "Gut Trader"
+  created_at: "2026-01-20"
+  description: >
+    A momentum strategy that buys when the market looks good and the conditions
+    seem right. Exits when things look bad or when the portfolio feels overextended.
+
+strategy:
+  type: "momentum"
+
+  universe:
+    symbols:
+      - "SPY"
+      - "QQQ"
+    resolution: "daily"
+
+  signals:
+    entry:
+      conditions:
+        - "market looks good and momentum seems right"   # ERROR SVR-E030: vague language
+        - "RSI(14) > 50"
+      logic: "AND"
+    exit:
+      conditions:
+        - "when appropriate to exit"                     # ERROR SVR-E030: vague language
+        - "RSI(14) < 45"
+      logic: "OR"
+
+  risk_management:
+    position_sizing: "percentage"
+    max_position_size: 0.10
+    stop_loss: 0.05
+    take_profit: 0.12
+    max_drawdown: 0.20
+    max_leverage: 1.0
+
+  performance_targets:
+    sharpe_ratio_min: 1.1
+    win_rate_min: 0.52
+    max_drawdown_threshold: 0.20
+
+  backtesting:
+    start_date: "2020-01-01"
+    end_date: "2024-12-31"
+    initial_capital: 50000
+    min_trades: 100           # WARN SVR-W011: < 1000
+    # benchmark missing       # WARN SVR-W008
+
+  data_requirements:
+    resolution: "daily"
+    min_history_days: 252
+    indicators:
+      - "RSI(14)"
+      - "SMA(50)"
