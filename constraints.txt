@@ -1,0 +1,10 @@
+# Constraints file for deterministic pip dependency resolution.
+#
+# These pins eliminate the resolution-too-deep failure that occurs when pip
+# backtracks through hundreds of openai/aider-chat version combinations.
+#
+# aider-chat==0.84.0 declares openai==1.75.0 as its exact dependency, so
+# both pins are consistent.  Bump both together when upgrading aider.
+
+openai==1.75.0
+aider-chat==0.84.0
