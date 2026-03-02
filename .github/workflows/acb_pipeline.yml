@@ -46,6 +46,7 @@ jobs:
     continue-on-error: false
     permissions:
       contents: read
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -128,3 +129,50 @@ jobs:
         run: |
           python scripts/aider_builder.py \
             --spec "${{ matrix.spec_file }}"
+
+      - name: Compute spec name
+        id: spec-name
+        if: always()
+        run: |
+          SPEC_NAME=$(python -c "import pathlib; print(pathlib.Path('${{ matrix.spec_file }}').stem)")
+          echo "spec_name=${SPEC_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Pre-commit quality gates
+        id: pre-commit-gates
+        run: |
+          python scripts/pre_commit_gates.py \
+            --strategy "strategies/${{ steps.spec-name.outputs.spec_name }}.py" \
+            --output /tmp/pre_commit_gates_output.json
+
+      - name: QC Upload and Backtest
+        id: qc-upload-eval
+        env:
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+        run: |
+          python scripts/qc_upload_eval.py \
+            --spec "${{ matrix.spec_file }}" \
+            --strategy "strategies/${{ steps.spec-name.outputs.spec_name }}.py" \
+            --output /tmp/qc_eval_output.json
+
+      - name: Human review and artifacts
+        id: human-review
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/human_review_artifacts.py \
+            --spec "${{ matrix.spec_file }}" \
+            --pre-commit-output /tmp/pre_commit_gates_output.json \
+            --qc-output /tmp/qc_eval_output.json
+
+      - name: Upload evaluation artifacts
+        id: upload-artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-artifacts-${{ steps.spec-name.outputs.spec_name }}
+          path: |
+            /tmp/pre_commit_gates_output.json
+            /tmp/qc_eval_output.json
+          if-no-files-found: warn
