@@ -207,13 +207,27 @@ def run_ack_gate(warn_list: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Accept WARNs as positional arguments or newline-delimited stdin.
+    """Accept WARNs as positional arguments, newline-delimited stdin, or --warns JSON file.
 
     Usage:
         python ack_gate.py "WARN: stop-loss > 20%" "WARN: backtesting < 2 years"
         echo -e "warn1\\nwarn2" | python ack_gate.py
+        python ack_gate.py --warns /tmp/reviewer_output.json
     """
     args = argv if argv is not None else sys.argv[1:]
+
+    if len(args) == 2 and args[0] == "--warns":
+        try:
+            with open(args[1], "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except FileNotFoundError:
+            print(f"[ack_gate] --warns file not found: {args[1]}", file=sys.stderr)
+            return 1
+        except json.JSONDecodeError as exc:
+            print(f"[ack_gate] --warns file is not valid JSON: {exc}", file=sys.stderr)
+            return 1
+        warn_list = data.get("concerns", [])
+        return run_ack_gate(warn_list)
 
     if args:
         warn_list = [a for a in args if a.strip()]

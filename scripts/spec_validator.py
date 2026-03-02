@@ -533,14 +533,16 @@ def build_summary(spec_path: str, findings: list[dict[str, str]]) -> dict[str, A
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
 
-    if len(args) != 1:
+    if len(args) == 2 and args[0] == "--spec":
+        spec_path = args[1]
+    elif len(args) == 1 and not args[0].startswith("--"):
+        spec_path = args[0]
+    else:
         print(
-            json.dumps({"error": "Usage: spec_validator.py <path/to/spec.yaml>"}),
+            json.dumps({"error": "Usage: spec_validator.py --spec <path/to/spec.yaml>"}),
             file=sys.stderr,
         )
         return 2
-
-    spec_path = args[0]
 
     if not os.path.isfile(spec_path):
         print(

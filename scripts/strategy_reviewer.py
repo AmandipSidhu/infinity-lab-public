@@ -312,14 +312,30 @@ def review_spec(spec_yaml: str) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
 
-    if len(args) != 1:
-        print(
-            json.dumps({"error": "Usage: strategy_reviewer.py <path/to/spec.yaml>"}),
-            file=sys.stderr,
-        )
-        return 2
+    spec_path: str | None = None
+    output_path: str | None = None
+    positional: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--spec" and i + 1 < len(args):
+            spec_path = args[i + 1]
+            i += 2
+        elif args[i] == "--output" and i + 1 < len(args):
+            output_path = args[i + 1]
+            i += 2
+        else:
+            positional.append(args[i])
+            i += 1
 
-    spec_path = args[0]
+    if spec_path is None:
+        if len(positional) == 1:
+            spec_path = positional[0]
+        else:
+            print(
+                json.dumps({"error": "Usage: strategy_reviewer.py --spec <path/to/spec.yaml> [--output <path>]"}),
+                file=sys.stderr,
+            )
+            return 2
 
     if not os.path.isfile(spec_path):
         print(
@@ -349,7 +365,12 @@ def main(argv: list[str] | None = None) -> int:
     output = dict(result)
     output["spec_file"] = spec_path
     output["reviewed_at"] = datetime.now(timezone.utc).isoformat()
-    print(json.dumps(output, indent=2))
+    json_output = json.dumps(output, indent=2)
+    if output_path:
+        with open(output_path, "w", encoding="utf-8") as out_fh:
+            out_fh.write(json_output)
+    else:
+        print(json_output)
     return 0
 
 

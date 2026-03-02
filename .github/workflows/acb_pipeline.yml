@@ -1,0 +1,139 @@
+name: ACB Pipeline
+
+on:
+  push:
+    paths:
+      - "specs/**"
+  workflow_dispatch:
+    inputs:
+      spec_file:
+        description: "Path to the spec file to validate (e.g. specs/my_strategy.yaml)"
+        required: false
+        default: ""
+
+jobs:
+  acb-pipeline:
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Python 3.11
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip dependencies
+        id: cache-pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        id: install-deps
+        run: pip install -r requirements.txt
+
+      - name: Find changed spec file
+        id: find-spec
+        run: |
+          if [ -n "${{ inputs.spec_file }}" ]; then
+            SPEC_FILE="${{ inputs.spec_file }}"
+          else
+            SPEC_FILE=$(git diff --name-only HEAD~1 HEAD -- 'specs/**' | head -n 1)
+          fi
+          if [ -z "$SPEC_FILE" ]; then
+            echo "::error::No spec file found in specs/ for this run."
+            exit 1
+          fi
+          echo "spec_file=$SPEC_FILE" >> "$GITHUB_OUTPUT"
+          echo "Found spec file: $SPEC_FILE"
+
+      - name: Validate spec
+        id: validate
+        run: |
+          python scripts/spec_validator.py --spec "${{ steps.find-spec.outputs.spec_file }}"
+
+      - name: Review strategy
+        id: review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python scripts/strategy_reviewer.py \
+            --spec "${{ steps.find-spec.outputs.spec_file }}" \
+            --output /tmp/reviewer_output.json
+
+      - name: Evaluate review results and post step summary
+        id: evaluate
+        run: |
+          python - <<'PYEOF'
+          import json
+          import os
+
+          with open("/tmp/reviewer_output.json", encoding="utf-8") as fh:
+              data = json.load(fh)
+
+          verdict = data.get("verdict", "PASS")
+          risk_level = data.get("risk_level", "low")
+          concerns = data.get("concerns", [])
+          warn_count = len(concerns)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"warn_count={warn_count}\n")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as s:
+              s.write("## Strategy Reviewer Results\n\n")
+              s.write(f"**Spec file**: `{data.get('spec_file', 'unknown')}`\n\n")
+              s.write(f"**Verdict**: {verdict}\n\n")
+              s.write(f"**Risk level**: {risk_level}\n\n")
+              if concerns:
+                  s.write(f"### Warnings ({len(concerns)})\n\n")
+                  for i, concern in enumerate(concerns, 1):
+                      s.write(f"{i}. {concern}\n")
+              else:
+                  s.write("No warnings — strategy review passed cleanly.\n")
+          PYEOF
+
+      - name: ACK gate
+        id: ack-gate
+        if: steps.evaluate.outputs.warn_count != '0'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ACK_CHANNEL_ID: ${{ secrets.SLACK_ACK_CHANNEL_ID }}
+        run: |
+          python scripts/ack_gate.py --warns /tmp/reviewer_output.json
+
+      - name: Post ACK gate timeout annotation
+        if: failure() && steps.ack-gate.outcome == 'failure'
+        run: |
+          python - <<'PYEOF'
+          import json
+
+          try:
+              with open("/tmp/reviewer_output.json", encoding="utf-8") as fh:
+                  data = json.load(fh)
+              gate_id = f"{data.get('spec_file', 'unknown')}@{data.get('reviewed_at', 'unknown')}"
+          except Exception:
+              gate_id = "unknown"
+
+          print(
+              f"::error::ACK gate timed out without acknowledgment. "
+              f"gate_id={gate_id}. "
+              f"Reply 'ACK <TOKEN>' in the Slack thread to unblock the pipeline."
+          )
+          PYEOF
+
+      - name: Pipeline complete
+        id: complete
+        run: |
+          echo "ACB pipeline completed successfully — spec validated and review acknowledged."
