@@ -133,7 +133,13 @@ jobs:
           )
           PYEOF
 
-      - name: Pipeline complete
-        id: complete
+      - name: Aider build
+        id: aider-build
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "ACB pipeline completed successfully — spec validated and review acknowledged."
+          python scripts/aider_builder.py \
+            --spec "${{ steps.find-spec.outputs.spec_file }}"
