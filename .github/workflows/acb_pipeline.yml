@@ -128,3 +128,31 @@ jobs:
         run: |
           python scripts/aider_builder.py \
             --spec "${{ matrix.spec_file }}"
+
+      - name: Pre-commit quality gates
+        id: pre-commit-gates
+        run: |
+          python scripts/pre_commit_gates.py --dir strategies/
+
+      - name: QuantConnect upload and backtest
+        id: qc-upload-eval
+        env:
+          QUANTCONNECT_USER_ID: ${{ secrets.QUANTCONNECT_USER_ID }}
+          QUANTCONNECT_API_KEY: ${{ secrets.QUANTCONNECT_API_KEY }}
+          QUANTCONNECT_PROJECT_ID: ${{ secrets.QUANTCONNECT_PROJECT_ID }}
+        run: |
+          SPEC_NAME=$(basename "${{ matrix.spec_file }}" .yaml)
+          python scripts/qc_upload_eval.py \
+            --strategy "strategies/${SPEC_NAME}.py"
+
+      - name: Human review notification
+        id: human-review-notify
+        if: always()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ACK_CHANNEL_ID: ${{ secrets.SLACK_ACK_CHANNEL_ID }}
+          AIDER_BUILD_STATUS: ${{ steps.aider-build.outcome }}
+          PRE_COMMIT_STATUS: ${{ steps.pre-commit-gates.outcome }}
+        run: |
+          python scripts/human_review_notify.py \
+            --spec "${{ matrix.spec_file }}"
