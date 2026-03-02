@@ -1,0 +1,69 @@
+# Smoke test spec — pushes the full ACB pipeline end-to-end
+# Validates: spec_validator → strategy_reviewer (Gemini) → ack_gate → aider_builder (4-tier)
+
+metadata:
+  name: smoke_rsi_momentum
+  version: "1.0.0"
+  description: >-
+    Simple RSI momentum strategy on SPY/QQQ.
+    Entry when RSI(14) crosses above 30 on hourly bars;
+    exit when RSI(14) crosses above 70.
+    Used as the end-to-end smoke test for the ACB pipeline.
+  author: infinity-lab
+  created_at: "2026-03-01"
+
+strategy:
+  type: momentum
+
+  universe:
+    symbols:
+      - SPY
+      - QQQ
+    resolution: hour
+
+  signals:
+    entry:
+      conditions:
+        - "RSI(14) crosses above 30 (oversold reversal)"
+        - "Close price > 200-period SMA (trend filter)"
+        - "Volume > 1.5x 20-period average volume"
+    exit:
+      conditions:
+        - "RSI(14) crosses above 70 (overbought)"
+        - "Hard stop-loss at 5% below entry price"
+        - "Take-profit at 10% above entry price"
+
+  risk_management:
+    stop_loss: 0.05
+    take_profit: 0.10
+    max_position_size: 0.20
+    max_drawdown: 0.15
+    max_leverage: 1.0
+    position_sizing: fixed_fractional
+
+  performance_targets:
+    sharpe_ratio_min: 1.5
+    max_drawdown_threshold: 0.15
+    win_rate_min: 0.55
+
+  backtesting:
+    start_date: "2018-01-01"
+    end_date: "2024-12-31"
+    initial_capital: 100000
+    min_trades: 500
+    benchmark: SPY
+
+  data_requirements:
+    indicators:
+      - RSI(14)
+      - SMA(200)
+      - volume_sma(20)
+    min_history_days: 210
+
+  acceptance_criteria:
+    - Sharpe ratio >= 1.5 over backtest period
+    - Max drawdown <= 15%
+    - Win rate >= 55%
+    - Min 500 trades executed
+    - No look-ahead bias in signal calculation
+    - All positions sized at max 20% of portfolio
