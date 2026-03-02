@@ -52,6 +52,7 @@ from aider_builder import (  # noqa: E402
     _detect_syntax_error,
     _extract_error_fingerprint,
     _extract_test_pass_rate,
+    _git_commit_and_push,
     _write_step_summary,
     build,
     main,
@@ -474,6 +475,132 @@ class TestRunTier4:
 
 
 # ---------------------------------------------------------------------------
+# _git_commit_and_push()
+# ---------------------------------------------------------------------------
+
+
+class TestGitCommitAndPush:
+    def _make_completed(self, returncode: int, stdout: str = "", stderr: str = "") -> MagicMock:
+        m = MagicMock()
+        m.returncode = returncode
+        m.stdout = stdout
+        m.stderr = stderr
+        return m
+
+    def test_commits_and_pushes_successfully(self) -> None:
+        """Happy path: staged changes exist, commit and push both succeed."""
+        diff_changed = self._make_completed(1)  # non-zero → changes exist
+        commit_ok = self._make_completed(0, stdout="[main abc1234] feat(aider): ...")
+        remote_url = self._make_completed(0, stdout="https://github.com/org/repo")
+        push_ok = self._make_completed(0)
+
+        run_calls = [
+            self._make_completed(0),  # git config user.email
+            self._make_completed(0),  # git config user.name
+            self._make_completed(0),  # git add
+            diff_changed,             # git diff --cached --quiet
+            commit_ok,                # git commit
+            remote_url,               # git remote get-url
+            self._make_completed(0),  # git remote set-url
+            push_ok,                  # git push
+        ]
+        with patch("aider_builder.subprocess.run", side_effect=run_calls) as mock_run, \
+             patch.dict(os.environ, {"GITHUB_TOKEN": "tok123"}):
+            result = _git_commit_and_push("my_strat", "gemini/gemini-2.5-flash", 1)
+
+        assert result is True
+        # Verify commit message contains spec_name and model/tier info
+        commit_call = mock_run.call_args_list[4]
+        commit_cmd = commit_call[0][0]
+        assert "my_strat" in " ".join(commit_cmd)
+        assert "tier 1" in " ".join(commit_cmd)
+
+    def test_returns_true_with_warning_when_no_changes(self, capsys: pytest.CaptureFixture) -> None:
+        """When git diff --cached --quiet exits 0, no staged changes — warn and return True."""
+        diff_no_change = self._make_completed(0)  # zero → no changes
+
+        run_calls = [
+            self._make_completed(0),  # git config user.email
+            self._make_completed(0),  # git config user.name
+            self._make_completed(0),  # git add
+            diff_no_change,           # git diff --cached --quiet
+        ]
+        with patch("aider_builder.subprocess.run", side_effect=run_calls):
+            result = _git_commit_and_push("empty_strat", "gpt-5", 3)
+
+        assert result is True
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "nothing to commit" in captured.err
+
+    def test_returns_false_when_commit_fails(self) -> None:
+        """git commit non-zero exit → return False."""
+        diff_changed = self._make_completed(1)
+        commit_fail = self._make_completed(1, stderr="commit error")
+
+        run_calls = [
+            self._make_completed(0),  # git config user.email
+            self._make_completed(0),  # git config user.name
+            self._make_completed(0),  # git add
+            diff_changed,
+            commit_fail,
+        ]
+        with patch("aider_builder.subprocess.run", side_effect=run_calls):
+            result = _git_commit_and_push("fail_strat", "claude-opus-4.5", 4)
+
+        assert result is False
+
+    def test_returns_false_when_push_fails(self, capsys: pytest.CaptureFixture) -> None:
+        """git push non-zero exit → return False with error message."""
+        diff_changed = self._make_completed(1)
+        commit_ok = self._make_completed(0)
+        remote_url = self._make_completed(0, stdout="https://github.com/org/repo")
+        push_fail = self._make_completed(1, stderr="remote rejected")
+
+        run_calls = [
+            self._make_completed(0),  # git config user.email
+            self._make_completed(0),  # git config user.name
+            self._make_completed(0),  # git add
+            diff_changed,
+            commit_ok,
+            remote_url,
+            self._make_completed(0),  # git remote set-url
+            push_fail,
+        ]
+        with patch("aider_builder.subprocess.run", side_effect=run_calls), \
+             patch.dict(os.environ, {"GITHUB_TOKEN": "tok123"}):
+            result = _git_commit_and_push("push_fail_strat", "github/gpt-4o", 2)
+
+        assert result is False
+        captured = capsys.readouterr()
+        assert "ERROR" in captured.err
+
+    def test_skips_token_injection_when_no_github_token(self) -> None:
+        """When GITHUB_TOKEN is absent, remote URL is not modified."""
+        diff_changed = self._make_completed(1)
+        commit_ok = self._make_completed(0)
+        push_ok = self._make_completed(0)
+
+        run_calls = [
+            self._make_completed(0),  # git config user.email
+            self._make_completed(0),  # git config user.name
+            self._make_completed(0),  # git add
+            diff_changed,
+            commit_ok,
+            push_ok,                  # git push (no remote get-url / set-url calls)
+        ]
+        env_without_token = {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"}
+        with patch("aider_builder.subprocess.run", side_effect=run_calls) as mock_run, \
+             patch.dict(os.environ, env_without_token, clear=True):
+            result = _git_commit_and_push("no_token_strat", "gpt-5", 3)
+
+        assert result is True
+        # Ensure git remote set-url was never called
+        cmds = [call[0][0] for call in mock_run.call_args_list]
+        assert not any("set-url" in str(c) for c in cmds)
+
+
+# ---------------------------------------------------------------------------
 # build()
 # ---------------------------------------------------------------------------
 
@@ -481,7 +608,8 @@ class TestRunTier4:
 class TestBuild:
     def test_success_on_tier_1(self, tmp_path: Path) -> None:
         with patch("aider_builder.run_tier_1") as mock_t1, \
-             patch("aider_builder._write_step_summary") as mock_summary:
+             patch("aider_builder._write_step_summary") as mock_summary, \
+             patch("aider_builder._git_commit_and_push", return_value=True) as mock_git:
             mock_t1.return_value = TierRunResult(True, 1, _TIER1_MODEL, 2, "", "ok")
             result = build(str(VALID_SPEC))
         assert result is True
@@ -489,6 +617,15 @@ class TestBuild:
         mock_summary.assert_called_once()
         call_args = mock_summary.call_args[0]
         assert call_args[5] is True  # success=True
+        mock_git.assert_called_once_with("valid_001", _TIER1_MODEL, 1)
+
+    def test_success_on_tier_1_git_push_failure_returns_false(self) -> None:
+        with patch("aider_builder.run_tier_1") as mock_t1, \
+             patch("aider_builder._write_step_summary"), \
+             patch("aider_builder._git_commit_and_push", return_value=False):
+            mock_t1.return_value = TierRunResult(True, 1, _TIER1_MODEL, 2, "", "ok")
+            result = build(str(VALID_SPEC))
+        assert result is False
 
     def test_escalates_through_all_tiers_to_failure(self, tmp_path: Path) -> None:
         fail_result_1 = TierRunResult(False, 1, _TIER1_MODEL, 30, "rate_limit", "")
@@ -516,7 +653,8 @@ class TestBuild:
         with patch("aider_builder.run_tier_1", return_value=fail_result_1), \
              patch("aider_builder.run_tier_2", return_value=fail_result_2), \
              patch("aider_builder.run_tier_3", return_value=ok_result_3), \
-             patch("aider_builder._write_step_summary") as mock_summary:
+             patch("aider_builder._write_step_summary") as mock_summary, \
+             patch("aider_builder._git_commit_and_push", return_value=True):
             result = build(str(VALID_SPEC))
 
         assert result is True
@@ -535,7 +673,8 @@ class TestBuild:
 
         with patch("aider_builder.run_tier_1", return_value=fail_1), \
              patch("aider_builder.run_tier_2", return_value=ok_2), \
-             patch("aider_builder._write_step_summary") as mock_summary:
+             patch("aider_builder._write_step_summary") as mock_summary, \
+             patch("aider_builder._git_commit_and_push", return_value=True):
             build(str(VALID_SPEC))
 
         call_args = mock_summary.call_args[0]

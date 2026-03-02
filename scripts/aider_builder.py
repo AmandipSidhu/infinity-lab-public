@@ -405,6 +405,98 @@ def run_tier_4(spec_file: Path, spec_name: str) -> TierRunResult:
 
 
 # ---------------------------------------------------------------------------
+# Git commit / push helpers
+# ---------------------------------------------------------------------------
+
+
+def _git_commit_and_push(spec_name: str, model: str, tier: int) -> bool:
+    """Commit and push generated strategy/test files to the repo.
+
+    Returns True on success.  Returns True (with a warning) if no files were
+    changed.  Returns False if the commit or push fails.
+    """
+    # Configure git bot identity.
+    subprocess.run(
+        ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "github-actions[bot]"],
+        check=True,
+    )
+
+    # Stage the generated files.
+    subprocess.run(
+        ["git", "add", f"strategies/{spec_name}.py", f"tests/test_{spec_name}.py"],
+        check=True,
+    )
+
+    # Detect whether any files were actually staged.
+    diff_result = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        capture_output=True,
+    )
+    if diff_result.returncode == 0:
+        print(
+            f"[aider_builder] WARNING: Aider produced no output for {spec_name!r}; "
+            "nothing to commit.",
+            file=sys.stderr,
+        )
+        return True
+
+    # Commit with a descriptive message.
+    commit_msg = f"feat(aider): build {spec_name} strategy via {model} (tier {tier})"
+    commit_result = subprocess.run(
+        ["git", "commit", "-m", commit_msg],
+        capture_output=True,
+        text=True,
+    )
+    if commit_result.returncode != 0:
+        print(
+            f"[aider_builder] ERROR: git commit failed:\n"
+            f"{commit_result.stdout}\n{commit_result.stderr}",
+            file=sys.stderr,
+        )
+        return False
+
+    # Inject GITHUB_TOKEN into the remote URL for authenticated push.
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if token:
+        remote_result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+        )
+        if remote_result.returncode == 0:
+            remote_url = remote_result.stdout.strip()
+            if remote_url.startswith("https://"):
+                auth_url = remote_url.replace("https://", f"https://x-access-token:{token}@")
+                subprocess.run(
+                    ["git", "remote", "set-url", "origin", auth_url],
+                    check=True,
+                )
+
+    # Push to origin on the current branch.
+    push_result = subprocess.run(
+        ["git", "push", "origin", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if push_result.returncode != 0:
+        print(
+            f"[aider_builder] ERROR: git push failed:\n{push_result.stderr}",
+            file=sys.stderr,
+        )
+        return False
+
+    print(
+        f"[aider_builder] Committed and pushed strategies/{spec_name}.py "
+        f"and tests/test_{spec_name}.py"
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
 # GITHUB_STEP_SUMMARY output
 # ---------------------------------------------------------------------------
 
@@ -490,6 +582,8 @@ def build(spec_file_str: str) -> bool:
                 total_iterations,
                 True,
             )
+            if not _git_commit_and_push(spec_name, tier_result.model, tier_result.tier):
+                return False
             return True
 
         print(

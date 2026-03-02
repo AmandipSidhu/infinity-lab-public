@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: false
     permissions:
-      contents: read
+      contents: write
     strategy:
       fail-fast: false
       matrix:
