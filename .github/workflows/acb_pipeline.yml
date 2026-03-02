@@ -12,11 +12,44 @@ on:
         default: ""
 
 jobs:
+  detect-specs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix_specs: ${{ steps.get-specs.outputs.matrix_specs }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Get changed spec files
+        id: get-specs
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.spec_file }}" ]; then
+            SPECS_JSON=$(jq -cn --arg s "${{ inputs.spec_file }}" '[$s]')
+          else
+            SPECS_JSON=$(git diff --name-only HEAD~1 HEAD -- 'specs/**' | jq -Rcn '[inputs]')
+          fi
+          if [ "$SPECS_JSON" = "[]" ]; then
+            echo "::error::No spec files found in specs/ for this push"
+            exit 1
+          fi
+          echo "matrix_specs=$SPECS_JSON" >> "$GITHUB_OUTPUT"
+          echo "Found spec files: $SPECS_JSON"
+
   acb-pipeline:
+    needs: detect-specs
     runs-on: ubuntu-latest
     continue-on-error: false
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        spec_file: ${{ fromJson(needs.detect-specs.outputs.matrix_specs) }}
 
     steps:
       - name: Checkout repository
@@ -44,25 +77,10 @@ jobs:
         id: install-deps
         run: pip install -r requirements.txt
 
-      - name: Find changed spec file
-        id: find-spec
-        run: |
-          if [ -n "${{ inputs.spec_file }}" ]; then
-            SPEC_FILE="${{ inputs.spec_file }}"
-          else
-            SPEC_FILE=$(git diff --name-only HEAD~1 HEAD -- 'specs/**' | head -n 1)
-          fi
-          if [ -z "$SPEC_FILE" ]; then
-            echo "::error::No spec file found in specs/ for this run."
-            exit 1
-          fi
-          echo "spec_file=$SPEC_FILE" >> "$GITHUB_OUTPUT"
-          echo "Found spec file: $SPEC_FILE"
-
       - name: Validate spec
         id: validate
         run: |
-          python scripts/spec_validator.py --spec "${{ steps.find-spec.outputs.spec_file }}"
+          python scripts/spec_validator.py --spec "${{ matrix.spec_file }}"
 
       - name: Review strategy
         id: review
@@ -70,7 +88,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python scripts/strategy_reviewer.py \
-            --spec "${{ steps.find-spec.outputs.spec_file }}" \
+            --spec "${{ matrix.spec_file }}" \
             --output /tmp/reviewer_output.json
 
       - name: Evaluate review results and post step summary
@@ -142,4 +160,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python scripts/aider_builder.py \
-            --spec "${{ steps.find-spec.outputs.spec_file }}"
+            --spec "${{ matrix.spec_file }}"
