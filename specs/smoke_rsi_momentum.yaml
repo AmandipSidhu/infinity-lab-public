@@ -1,6 +1,6 @@
 # Smoke test spec — pushes the full ACB pipeline end-to-end
 # Validates: spec_validator → strategy_reviewer (Gemini) → aider_builder (4-tier)
-# retrigger: 6
+# retrigger: 7
 
 metadata:
   name: smoke_rsi_momentum
