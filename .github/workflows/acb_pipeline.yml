@@ -31,7 +31,7 @@ jobs:
           if [ -n "${{ inputs.spec_file }}" ]; then
             SPECS_JSON=$(jq -cn --arg s "${{ inputs.spec_file }}" '[\$s]')
           else
-            SPECS_JSON=$(git diff --name-only HEAD~1 HEAD -- 'specs/**' | jq -Rcn '[inputs]')
+            SPECS_JSON=$(git diff --name-only HEAD~1 HEAD -- 'specs/**/*.yaml' 'specs/**/*.yml' | jq -Rcn '[inputs]')
           fi
           if [ "$SPECS_JSON" = "[]" ]; then
             echo "::error::No spec files found in specs/ for this push"
@@ -146,6 +146,7 @@ jobs:
 
       - name: Pre-commit quality gates
         id: pre-commit-gates
+        if: always()
         run: |
           python scripts/pre_commit_gates.py \
             --strategy "strategies/${{ steps.spec-name.outputs.spec_name }}.py" \
@@ -153,6 +154,7 @@ jobs:
 
       - name: QC Upload and Backtest
         id: qc-upload-eval
+        if: always()
         env:
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
           QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
@@ -164,7 +166,7 @@ jobs:
 
       - name: Human review and artifacts
         id: human-review
-        if: steps.install-deps.outcome == 'success'
+        if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

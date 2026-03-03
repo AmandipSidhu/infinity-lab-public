@@ -341,15 +341,21 @@ class TestUploadAndEvaluate:
 
 
 class TestCLI:
-    def test_missing_spec_returns_2(self, tmp_path: Path) -> None:
+    def test_missing_spec_returns_1(self, tmp_path: Path) -> None:
         strategy = _make_strategy_file(tmp_path)
-        rc = main(["--spec", "/nonexistent/spec.yaml", "--strategy", str(strategy)])
-        assert rc == 2
+        out_file = tmp_path / "out.json"
+        rc = main(["--spec", "/nonexistent/spec.yaml", "--strategy", str(strategy), "--output", str(out_file)])
+        assert rc == 1
+        data = json.loads(out_file.read_text())
+        assert data["result"] == "FAIL"
 
-    def test_missing_strategy_returns_2(self, tmp_path: Path) -> None:
+    def test_missing_strategy_returns_1(self, tmp_path: Path) -> None:
         spec = _make_spec(tmp_path)
-        rc = main(["--spec", str(spec), "--strategy", "/nonexistent/strategy.py"])
-        assert rc == 2
+        out_file = tmp_path / "out.json"
+        rc = main(["--spec", str(spec), "--strategy", "/nonexistent/strategy.py", "--output", str(out_file)])
+        assert rc == 1
+        data = json.loads(out_file.read_text())
+        assert data["result"] == "FAIL"
 
     def test_no_args_exits_nonzero(self) -> None:
         with pytest.raises(SystemExit) as exc_info:
