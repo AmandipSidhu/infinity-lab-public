@@ -22,7 +22,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Get changed spec files
         id: get-specs
@@ -31,7 +31,9 @@ jobs:
           if [ -n "${{ inputs.spec_file }}" ]; then
             SPECS_JSON=$(jq -cn --arg s "${{ inputs.spec_file }}" '[\$s]')
           else
-            SPECS_JSON=$(git diff --name-only HEAD~1 HEAD -- 'specs/**/*.yaml' 'specs/**/*.yml' | jq -Rcn '[inputs]')
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.sha }}"
+            SPECS_JSON=$(git diff --name-only "$BEFORE" "$AFTER" -- 'specs/**/*.yaml' 'specs/**/*.yml' | jq -Rcn '[inputs]')
           fi
           if [ "$SPECS_JSON" = "[]" ]; then
             echo "::error::No spec files found in specs/ for this push"
