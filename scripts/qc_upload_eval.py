@@ -354,14 +354,35 @@ def main(argv: list[str] | None = None) -> int:
     strategy_file = Path(args.strategy)
 
     if not spec_file.is_file():
-        print(json.dumps({"error": f"Spec file not found: {spec_file}"}), file=sys.stderr)
-        return 2
+        error_summary = {
+            "spec_file": str(spec_file),
+            "strategy_file": str(strategy_file),
+            "result": "FAIL",
+            "error": f"Spec file not found: {spec_file}",
+            "violations": [],
+            "backtest_stats": {},
+        }
+        output_json = json.dumps(error_summary, indent=2)
+        if args.output:
+            Path(args.output).write_text(output_json, encoding="utf-8")
+        else:
+            print(output_json)
+        return 1
     if not strategy_file.is_file():
-        print(
-            json.dumps({"error": f"Strategy file not found: {strategy_file}"}),
-            file=sys.stderr,
-        )
-        return 2
+        error_summary = {
+            "spec_file": str(spec_file),
+            "strategy_file": str(strategy_file),
+            "result": "FAIL",
+            "error": f"Strategy file not found: {strategy_file}",
+            "violations": [],
+            "backtest_stats": {},
+        }
+        output_json = json.dumps(error_summary, indent=2)
+        if args.output:
+            Path(args.output).write_text(output_json, encoding="utf-8")
+        else:
+            print(output_json)
+        return 1
 
     try:
         summary = upload_and_evaluate(spec_file, strategy_file)

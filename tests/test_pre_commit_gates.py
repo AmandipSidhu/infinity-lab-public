@@ -363,9 +363,13 @@ class TestRunGates:
 
 
 class TestCLI:
-    def test_missing_strategy_returns_2(self) -> None:
-        rc = main(["--strategy", "/nonexistent/strategy.py"])
-        assert rc == 2
+    def test_missing_strategy_returns_1(self, tmp_path: Path) -> None:
+        out_file = tmp_path / "out.json"
+        rc = main(["--strategy", "/nonexistent/strategy.py", "--output", str(out_file)])
+        assert rc == 1
+        data = json.loads(out_file.read_text())
+        assert data["result"] == "FAIL"
+        assert data["error_count"] == 1
 
     def test_no_args_exits_with_error(self) -> None:
         with pytest.raises(SystemExit) as exc_info:
