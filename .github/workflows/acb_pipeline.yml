@@ -59,6 +59,30 @@ jobs:
         with:
           fetch-depth: 2
 
+      - name: Validate required secrets
+        id: validate-secrets
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ACK_CHANNEL_ID: ${{ secrets.SLACK_ACK_CHANNEL_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          MISSING=()
+          for var in SLACK_BOT_TOKEN SLACK_ACK_CHANNEL_ID GEMINI_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY QC_USER_ID QC_API_TOKEN; do
+            if [ -z "${!var:-}" ]; then
+              MISSING+=("$var")
+            fi
+          done
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets: ${MISSING[*]}"
+            exit 1
+          fi
+          echo "All required secrets are present."
+
       - name: Set up Python 3.11
         id: setup-python
         uses: actions/setup-python@v5
@@ -89,6 +113,24 @@ jobs:
         id: validate
         run: |
           python scripts/spec_validator.py --spec "${{ matrix.spec_file }}"
+
+      - name: Slack receipt acknowledgment
+        id: slack-ack
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ACK_CHANNEL_ID: ${{ secrets.SLACK_ACK_CHANNEL_ID }}
+        run: |
+          python - <<'PYEOF'
+          import os
+          import sys
+          sys.path.insert(0, "scripts")
+          import slack_api
+          spec_file = "${{ matrix.spec_file }}"
+          channel = os.environ["SLACK_ACK_CHANNEL_ID"]
+          text = f":rocket: ACB Pipeline started for spec `{spec_file}` — build in progress."
+          slack_api.post_message(channel, text)
+          print(f"Slack ack posted to {channel}")
+          PYEOF
 
       - name: Review strategy
         id: review
@@ -146,7 +188,6 @@ jobs:
 
       - name: Pre-commit quality gates
         id: pre-commit-gates
-        if: always()
         run: |
           python scripts/pre_commit_gates.py \
             --strategy "strategies/${{ steps.spec-name.outputs.spec_name }}.py" \
@@ -154,7 +195,6 @@ jobs:
 
       - name: QC Upload and Backtest
         id: qc-upload-eval
-        if: always()
         env:
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
           QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
@@ -166,7 +206,7 @@ jobs:
 
       - name: Human review and artifacts
         id: human-review
-        if: always()
+        if: steps.install-deps.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
