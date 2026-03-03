@@ -297,3 +297,26 @@ class TestDependencyPinConsistency:
         assert "-c constraints.txt" in content, (
             "acb_pipeline.yml install step must use -c constraints.txt"
         )
+
+    def test_workflow_uses_python_m_pip(self) -> None:
+        workflow = REPO_ROOT / ".github" / "workflows" / "acb_pipeline.yml"
+        content = workflow.read_text(encoding="utf-8")
+        assert "python -m pip install" in content, (
+            "acb_pipeline.yml install step must use 'python -m pip install' "
+            "to ensure packages are installed for the same interpreter"
+        )
+
+    def test_workflow_verifies_requests_import(self) -> None:
+        workflow = REPO_ROOT / ".github" / "workflows" / "acb_pipeline.yml"
+        content = workflow.read_text(encoding="utf-8")
+        assert "import requests" in content, (
+            "acb_pipeline.yml must have a post-install sanity step that verifies 'import requests'"
+        )
+
+    def test_workflow_human_review_gated_on_install(self) -> None:
+        workflow = REPO_ROOT / ".github" / "workflows" / "acb_pipeline.yml"
+        content = workflow.read_text(encoding="utf-8")
+        assert "steps.install-deps.outcome == 'success'" in content, (
+            "Human review and artifacts step must be gated on install-deps success, "
+            "not always(), to avoid masking root-cause failures"
+        )
