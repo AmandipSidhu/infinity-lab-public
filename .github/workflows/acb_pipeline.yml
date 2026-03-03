@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: false
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
     strategy:
       fail-fast: false
@@ -237,12 +237,19 @@ jobs:
           python - <<'PYEOF'
           import json
           import os
+          import pathlib
+          import re
           import sys
+          import time
           import urllib.request
+          from datetime import datetime, timezone
 
           spec_file = "${{ matrix.spec_file }}"
+          run_id = "${{ github.run_id }}"
+          run_attempt = "${{ github.run_attempt }}"
           run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           repo = "${{ github.repository }}"
+          branch = "${{ github.ref_name }}"
           token = os.environ.get("GITHUB_TOKEN", "")
 
           steps_info = [
@@ -283,8 +290,20 @@ jobs:
               else:
                   return f"⚠️ {outcome.upper()}"
 
+          def slugify(value: str) -> str:
+              value = value.strip().lower()
+              value = re.sub(r"[^a-z0-9._-]+", "-", value)
+              value = re.sub(r"-+", "-", value).strip("-")
+              return value or "unknown"
+
+          spec_stem = pathlib.Path(spec_file).stem
+          ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+          report_dir = pathlib.Path("reports") / "e2e" / slugify(spec_stem)
+          report_path = report_dir / f"{ts}-run-{run_id}-attempt-{run_attempt}.md"
+
           lines = ["## E2E Step Report", ""]
           lines.append(f"**Spec**: `{spec_file}`")
+          lines.append(f"**Branch**: `{branch}`")
           lines.append(f"**Run**: [{run_url}]({run_url})")
           lines.append("")
           lines.append("| # | Step | Result | Likely Fix |")
@@ -304,13 +323,35 @@ jobs:
 
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
               fh.write(report)
-          print(report)
+
+          report_dir.mkdir(parents=True, exist_ok=True)
+          report_path.write_text(report, encoding="utf-8")
+          print(f"Wrote report to {report_path}")
 
           if not token:
-              print("No GITHUB_TOKEN — skipping PR comment.")
+              print("No GITHUB_TOKEN — skipping PR comment and repo commit.")
               sys.exit(0)
 
-          branch = "${{ github.ref_name }}"
+          def run(cmd: str) -> int:
+              return os.system(cmd)
+
+          run("git config user.name 'github-actions[bot]'")
+          run("git config user.email '41898282+github-actions[bot]@users.noreply.github.com'")
+
+          run(f"git add '{report_path.as_posix()}'")
+          status = os.system("git diff --cached --quiet")
+          if status == 0:
+              print("No changes to commit for report file.")
+          else:
+              msg = f"chore(reports): add E2E step report for {spec_stem} (run {run_id})"
+              if run("git commit -m \"" + msg.replace('"', '\\"') + "\"") != 0:
+                  print("Commit failed; continuing without failing the workflow.")
+              else:
+                  push_rc = run(f"git push origin HEAD:{branch}")
+                  if push_rc != 0:
+                      print("Push failed (possible race with other matrix jobs); continuing.")
+
+          # PR comment best-effort
           repo_parts = repo.split("/", 1)
           if len(repo_parts) != 2:
               print(f"Unexpected repo format: {repo!r} — skipping PR comment.")
