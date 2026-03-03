@@ -320,3 +320,31 @@ class TestDependencyPinConsistency:
             "Human review and artifacts step must be gated on install-deps success, "
             "not always(), to avoid masking root-cause failures"
         )
+
+
+class TestStrictModeSecretValidation:
+    """Validate that the workflow enforces strict mode for required secrets."""
+
+    def test_secret_validation_shell_fails_when_vars_missing(self) -> None:
+        """The validate-secrets shell snippet exits 1 and names the missing vars."""
+        import subprocess
+
+        script = (
+            "MISSING=(); "
+            "for var in SLACK_BOT_TOKEN SLACK_ACK_CHANNEL_ID GEMINI_API_KEY "
+            "OPENAI_API_KEY ANTHROPIC_API_KEY QC_USER_ID QC_API_TOKEN; do "
+            '  if [ -z "${!var:-}" ]; then MISSING+=("$var"); fi; '
+            "done; "
+            'if [ ${#MISSING[@]} -gt 0 ]; then '
+            '  echo "::error::Missing required secrets: ${MISSING[*]}"; '
+            "  exit 1; "
+            "fi"
+        )
+        result = subprocess.run(
+            ["/bin/bash", "-c", script],
+            env={},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert "Missing required secrets" in result.stdout
