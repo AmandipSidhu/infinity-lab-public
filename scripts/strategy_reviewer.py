@@ -361,6 +361,32 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # If no AI API keys are configured, skip the review and write a SKIPPED result.
+    _has_any_key = any(
+        os.environ.get(k)
+        for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+    )
+    if not _has_any_key:
+        skipped_output: dict[str, Any] = {
+            "status": "SKIPPED",
+            "verdict": "WARN",
+            "risk_level": "unknown",
+            "concerns": [
+                "SRV-I001: No AI API keys configured "
+                "(GEMINI_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY). "
+                "Strategy review skipped. Configure at least one key to enable AI review."
+            ],
+            "spec_file": spec_path,
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        skipped_json = json.dumps(skipped_output, indent=2)
+        if output_path:
+            with open(output_path, "w", encoding="utf-8") as out_fh:
+                out_fh.write(skipped_json)
+        else:
+            print(skipped_json)
+        return 0
+
     result = review_spec(raw_yaml)
     output = dict(result)
     output["spec_file"] = spec_path

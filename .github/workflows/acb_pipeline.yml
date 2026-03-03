@@ -82,18 +82,92 @@ jobs:
         id: verify-deps
         run: |
           python -c "import sys; print('Python', sys.version, sys.executable)"
-          python -c "import requests; print('requests', requests.__version__)"
-          python -m pip show requests
+          python -c "import requests, yaml, json; print('requests', requests.__version__); print('pyyaml', yaml.__version__)"
+          python -m pip show requests pyyaml
+
+      - name: Slack spec receipt acknowledgment
+        id: slack-ack
+        if: always()
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+        run: |
+          python - <<'PYEOF'
+          import json
+          import os
+          import sys
+
+          spec_file = "${{ matrix.spec_file }}"
+          token = os.environ.get("SLACK_BOT_TOKEN", "")
+          channel = os.environ.get("SLACK_CHANNEL", "")
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
+
+          if not token or not channel:
+              note = (
+                  "**Slack Acknowledgment**: Not configured — "
+                  "`SLACK_BOT_TOKEN` and/or `SLACK_CHANNEL` secrets are not set. "
+                  "Set these repo secrets to enable Slack notifications."
+              )
+              print(note)
+              if summary_path:
+                  with open(summary_path, "a", encoding="utf-8") as fh:
+                      fh.write(f"## Slack Acknowledgment\n\n{note}\n\n")
+              sys.exit(0)
+
+          sys.path.insert(0, "scripts")
+          from slack_api import post_message
+
+          repo = os.environ.get("GITHUB_REPOSITORY", "unknown")
+          run_id = os.environ.get("GITHUB_RUN_ID", "unknown")
+          run_url = f"https://github.com/{repo}/actions/runs/{run_id}"
+          text = (
+              f":white_check_mark: *ACB Pipeline: Spec received*\n"
+              f"*Spec*: `{spec_file}`\n"
+              f"*Repo*: `{repo}`\n"
+              f"*Run*: <{run_url}|{run_id}>\n"
+              "Processing has started."
+          )
+          post_message(channel, text)
+          print(f"[slack-ack] Acknowledgment posted to Slack channel '{channel}'.")
+          PYEOF
 
       - name: Validate spec
         id: validate
         run: |
-          python scripts/spec_validator.py --spec "${{ matrix.spec_file }}"
+          set +e
+          python scripts/spec_validator.py --spec "${{ matrix.spec_file }}" > /tmp/validator_output.json
+          VALIDATE_EXIT=$?
+          cat /tmp/validator_output.json
+          python - <<'PYEOF'
+          import json, os
+          try:
+              with open("/tmp/validator_output.json", encoding="utf-8") as fh:
+                  data = json.load(fh)
+              result = data.get("result", "UNKNOWN")
+              emoji = "\u2705" if result == "PASS" else ("\u23ed\ufe0f" if result == "SKIPPED" else "\u274c")
+              summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
+              if summary_path:
+                  with open(summary_path, "a", encoding="utf-8") as s:
+                      s.write("## Spec Validation\n\n")
+                      s.write(f"**Spec file**: `{data.get('spec_file', 'unknown')}`\n\n")
+                      s.write(
+                          f"**Result**: {emoji} {result} "
+                          f"— {data.get('error_count', 0)} error(s), "
+                          f"{data.get('warning_count', 0)} warning(s)\n\n"
+                      )
+          except Exception as exc:
+              print(f"WARNING: could not write step summary: {exc}")
+          PYEOF
+          exit $VALIDATE_EXIT
 
       - name: Review strategy
         id: review
+        continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           python scripts/strategy_reviewer.py \
             --spec "${{ matrix.spec_file }}" \
@@ -101,33 +175,48 @@ jobs:
 
       - name: Post reviewer results to step summary
         id: evaluate
+        if: always()
         run: |
           python - <<'PYEOF'
           import json
           import os
 
-          with open("/tmp/reviewer_output.json", encoding="utf-8") as fh:
-              data = json.load(fh)
+          try:
+              with open("/tmp/reviewer_output.json", encoding="utf-8") as fh:
+                  data = json.load(fh)
+          except (OSError, json.JSONDecodeError) as exc:
+              print(f"WARNING: could not load reviewer output: {exc}")
+              data = {}
 
+          status = data.get("status", "")
           verdict = data.get("verdict", "PASS")
-          risk_level = data.get("risk_level", "low")
+          risk_level = data.get("risk_level", "unknown")
           concerns = data.get("concerns", [])
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
 
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as s:
-              s.write("## Strategy Reviewer Results\n\n")
-              s.write(f"**Spec file**: `{data.get('spec_file', 'unknown')}`\n\n")
-              s.write(f"**Verdict**: {verdict}\n\n")
-              s.write(f"**Risk level**: {risk_level}\n\n")
-              if concerns:
-                  s.write(f"### ⚠️ Warnings ({len(concerns)}) — review before next iteration\n\n")
-                  for i, concern in enumerate(concerns, 1):
-                      s.write(f"{i}. {concern}\n")
-              else:
-                  s.write("No warnings — strategy review passed cleanly.\n")
+          if not summary_path:
+              print("GITHUB_STEP_SUMMARY not set; skipping.")
+          else:
+              with open(summary_path, "a", encoding="utf-8") as s:
+                  s.write("## Strategy Reviewer Results\n\n")
+                  s.write(f"**Spec file**: `{data.get('spec_file', 'unknown')}`\n\n")
+                  if status == "SKIPPED":
+                      s.write("**Status**: ⏭️ SKIPPED — no AI API keys configured.\n\n")
+                  else:
+                      s.write(f"**Verdict**: {verdict}\n\n")
+                      s.write(f"**Risk level**: {risk_level}\n\n")
+                  if concerns:
+                      s.write(f"### ⚠️ Warnings ({len(concerns)})\n\n")
+                      for i, concern in enumerate(concerns, 1):
+                          s.write(f"{i}. {concern}\n")
+                      s.write("\n")
+                  elif status != "SKIPPED":
+                      s.write("No warnings — strategy review passed cleanly.\n")
           PYEOF
 
       - name: Aider build
         id: aider-build
+        continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

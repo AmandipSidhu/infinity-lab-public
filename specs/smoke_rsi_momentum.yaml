@@ -1,10 +1,10 @@
 # Smoke test spec — pushes the full ACB pipeline end-to-end
 # Validates: spec_validator → strategy_reviewer (Gemini) → aider_builder (4-tier)
-# retrigger: 4
+# retrigger: 5
 
 metadata:
   name: smoke_rsi_momentum
-  version: "1.0.0"
+  version: "1.1.0"
   description: >-
     Simple RSI momentum strategy on SPY/QQQ.
     Entry when RSI(14) crosses above 30 on hourly bars;

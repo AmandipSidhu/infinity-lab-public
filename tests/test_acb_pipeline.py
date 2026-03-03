@@ -93,9 +93,10 @@ class TestStrategyReviewerSpecFlag:
     def test_output_flag_writes_to_file(self, tmp_path: Path) -> None:
         spec_file = CORPUS_DIR / "valid_001.yaml"
         out_file = tmp_path / "reviewer_output.json"
-        with patch.object(strategy_reviewer, "CACHE_DIR", tmp_path / "cache"):
-            with patch.object(strategy_reviewer, "_run_fallback_chain", return_value=VALID_RESULT):
-                rc = reviewer_main(["--spec", str(spec_file), "--output", str(out_file)])
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}):
+            with patch.object(strategy_reviewer, "CACHE_DIR", tmp_path / "cache"):
+                with patch.object(strategy_reviewer, "_run_fallback_chain", return_value=VALID_RESULT):
+                    rc = reviewer_main(["--spec", str(spec_file), "--output", str(out_file)])
         assert rc == 0
         assert out_file.exists()
         data = json.loads(out_file.read_text())
@@ -108,9 +109,10 @@ class TestStrategyReviewerSpecFlag:
     ) -> None:
         spec_file = CORPUS_DIR / "valid_001.yaml"
         out_file = tmp_path / "reviewer_output.json"
-        with patch.object(strategy_reviewer, "CACHE_DIR", tmp_path / "cache"):
-            with patch.object(strategy_reviewer, "_run_fallback_chain", return_value=VALID_RESULT):
-                reviewer_main(["--spec", str(spec_file), "--output", str(out_file)])
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}):
+            with patch.object(strategy_reviewer, "CACHE_DIR", tmp_path / "cache"):
+                with patch.object(strategy_reviewer, "_run_fallback_chain", return_value=VALID_RESULT):
+                    reviewer_main(["--spec", str(spec_file), "--output", str(out_file)])
         captured = capsys.readouterr()
         assert captured.out == ""
 
@@ -118,9 +120,10 @@ class TestStrategyReviewerSpecFlag:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         spec_file = CORPUS_DIR / "valid_001.yaml"
-        with patch.object(strategy_reviewer, "CACHE_DIR", tmp_path / "cache"):
-            with patch.object(strategy_reviewer, "_run_fallback_chain", return_value=VALID_RESULT):
-                reviewer_main(["--spec", str(spec_file)])
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}):
+            with patch.object(strategy_reviewer, "CACHE_DIR", tmp_path / "cache"):
+                with patch.object(strategy_reviewer, "_run_fallback_chain", return_value=VALID_RESULT):
+                    reviewer_main(["--spec", str(spec_file)])
         captured = capsys.readouterr()
         assert captured.out.strip() != ""
         data = json.loads(captured.out)

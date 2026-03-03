@@ -353,6 +353,30 @@ def main(argv: list[str] | None = None) -> int:
     spec_file = Path(args.spec)
     strategy_file = Path(args.strategy)
 
+    # If QC secrets are not configured, output a structured SKIPPED result.
+    qc_user_id = os.environ.get("QC_USER_ID")
+    qc_api_token = os.environ.get("QC_API_TOKEN")
+    if not qc_user_id or not qc_api_token:
+        skipped_summary = {
+            "spec_file": str(spec_file),
+            "strategy_file": str(strategy_file),
+            "status": "SKIPPED",
+            "result": "SKIPPED",
+            "message": (
+                "QC_USER_ID or QC_API_TOKEN not configured. "
+                "QuantConnect backtest skipped. Set these secrets to enable backtesting."
+            ),
+            "violation_count": 0,
+            "violations": [],
+            "backtest_stats": {},
+        }
+        output_json = json.dumps(skipped_summary, indent=2)
+        if args.output:
+            Path(args.output).write_text(output_json, encoding="utf-8")
+        else:
+            print(output_json)
+        return 0
+
     if not spec_file.is_file():
         error_summary = {
             "spec_file": str(spec_file),
