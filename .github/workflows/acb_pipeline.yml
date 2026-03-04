@@ -154,25 +154,6 @@ jobs:
         run: |
           python scripts/spec_validator.py --spec "${{ matrix.spec_file }}"
 
-      - name: Slack receipt acknowledgment
-        id: slack-ack
-        if: steps.validate-secrets.outputs.secrets_ok == 'true'
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_ACK_CHANNEL_ID: ${{ secrets.SLACK_ACK_CHANNEL_ID }}
-        run: |
-          python - <<'PYEOF'
-          import os
-          import sys
-          sys.path.insert(0, "scripts")
-          import slack_api
-          spec_file = "${{ matrix.spec_file }}"
-          channel = os.environ["SLACK_ACK_CHANNEL_ID"]
-          text = f":rocket: ACB Pipeline started for spec `{spec_file}` — build in progress."
-          slack_api.post_message(channel, text)
-          print(f"Slack ack posted to {channel}")
-          PYEOF
-
       - name: Review strategy
         id: review
         if: steps.validate-secrets.outputs.secrets_ok == 'true'
@@ -304,7 +285,6 @@ jobs:
               ("install-deps",      "Install dependencies",             "${{ steps.install-deps.outcome }}"),
               ("verify-deps",       "Verify dependencies",              "${{ steps.verify-deps.outcome }}"),
               ("validate",          "Validate spec",                    "${{ steps.validate.outcome }}"),
-              ("slack-ack",         "Slack receipt acknowledgment",     "${{ steps.slack-ack.outcome }}"),
               ("review",            "Review strategy",                  "${{ steps.review.outcome }}"),
               ("evaluate",          "Post reviewer results",            "${{ steps.evaluate.outcome }}"),
               ("aider-build",       "Aider build",                      "${{ steps.aider-build.outcome }}"),
