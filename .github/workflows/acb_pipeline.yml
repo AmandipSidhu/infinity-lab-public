@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: false
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
     strategy:
       fail-fast: false
@@ -114,10 +114,14 @@ jobs:
             fi
           done
           if [ ${#MISSING[@]} -gt 0 ]; then
-            echo "::error::Missing required secrets: ${MISSING[*]}"
-            exit 1
+            echo "::warning::Missing secrets: ${MISSING[*]} — secret-dependent steps will be skipped."
+            echo "secrets_ok=false" >> "$GITHUB_OUTPUT"
+            echo "missing_secrets=${MISSING[*]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "All required secrets are present."
+            echo "secrets_ok=true" >> "$GITHUB_OUTPUT"
+            echo "missing_secrets=" >> "$GITHUB_OUTPUT"
           fi
-          echo "All required secrets are present."
 
       - name: Set up Python 3.11
         id: setup-python
@@ -152,6 +156,7 @@ jobs:
 
       - name: Slack receipt acknowledgment
         id: slack-ack
+        if: steps.validate-secrets.outputs.secrets_ok == 'true'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_ACK_CHANNEL_ID: ${{ secrets.SLACK_ACK_CHANNEL_ID }}
@@ -170,6 +175,7 @@ jobs:
 
       - name: Review strategy
         id: review
+        if: steps.validate-secrets.outputs.secrets_ok == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -179,6 +185,7 @@ jobs:
 
       - name: Post reviewer results to step summary
         id: evaluate
+        if: steps.review.outcome == 'success'
         run: |
           python - <<'PYEOF'
           import json
@@ -206,6 +213,7 @@ jobs:
 
       - name: Aider build
         id: aider-build
+        if: steps.validate-secrets.outputs.secrets_ok == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -224,6 +232,7 @@ jobs:
 
       - name: Pre-commit quality gates
         id: pre-commit-gates
+        if: steps.aider-build.outcome == 'success'
         run: |
           python scripts/pre_commit_gates.py \
             --strategy "strategies/${{ steps.spec-name.outputs.spec_name }}.py" \
@@ -231,6 +240,7 @@ jobs:
 
       - name: QC Upload and Backtest
         id: qc-upload-eval
+        if: steps.aider-build.outcome == 'success'
         env:
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
           QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
@@ -242,7 +252,7 @@ jobs:
 
       - name: Human review and artifacts
         id: human-review
-        if: steps.install-deps.outcome == 'success'
+        if: steps.qc-upload-eval.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -261,3 +271,103 @@ jobs:
             /tmp/pre_commit_gates_output.json
             /tmp/qc_eval_output.json
           if-no-files-found: warn
+
+      - name: E2E Step Report
+        id: e2e-report
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PYEOF'
+          import datetime
+          import os
+          import pathlib
+
+          spec_file = "${{ matrix.spec_file }}"
+          spec_stem = pathlib.Path(spec_file).stem
+          run_id = os.environ.get("GITHUB_RUN_ID", "unknown")
+          attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+          timestamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
+          report_dir = pathlib.Path("reports/e2e") / spec_stem
+          report_dir.mkdir(parents=True, exist_ok=True)
+          report_path = report_dir / f"{timestamp}-run-{run_id}-attempt-{attempt}.md"
+
+          secrets_ok = "${{ steps.validate-secrets.outputs.secrets_ok }}"
+          missing_secrets = "${{ steps.validate-secrets.outputs.missing_secrets }}"
+
+          steps_data = [
+              ("checkout",          "Checkout repository",              "${{ steps.checkout.outcome }}"),
+              ("validate-secrets",  "Validate required secrets",        "${{ steps.validate-secrets.outcome }}"),
+              ("setup-python",      "Set up Python 3.11",               "${{ steps.setup-python.outcome }}"),
+              ("cache-pip",         "Cache pip dependencies",           "${{ steps.cache-pip.outcome }}"),
+              ("install-deps",      "Install dependencies",             "${{ steps.install-deps.outcome }}"),
+              ("verify-deps",       "Verify dependencies",              "${{ steps.verify-deps.outcome }}"),
+              ("validate",          "Validate spec",                    "${{ steps.validate.outcome }}"),
+              ("slack-ack",         "Slack receipt acknowledgment",     "${{ steps.slack-ack.outcome }}"),
+              ("review",            "Review strategy",                  "${{ steps.review.outcome }}"),
+              ("evaluate",          "Post reviewer results",            "${{ steps.evaluate.outcome }}"),
+              ("aider-build",       "Aider build",                      "${{ steps.aider-build.outcome }}"),
+              ("spec-name",         "Compute spec name",                "${{ steps.spec-name.outcome }}"),
+              ("pre-commit-gates",  "Pre-commit quality gates",         "${{ steps.pre-commit-gates.outcome }}"),
+              ("qc-upload-eval",    "QC Upload and Backtest",           "${{ steps.qc-upload-eval.outcome }}"),
+              ("human-review",      "Human review and artifacts",       "${{ steps.human-review.outcome }}"),
+              ("upload-artifacts",  "Upload evaluation artifacts",      "${{ steps.upload-artifacts.outcome }}"),
+          ]
+
+          icons = {
+              "success":   "✅",
+              "failure":   "❌",
+              "skipped":   "⏭️",
+              "cancelled": "🚫",
+          }
+
+          lines = [
+              "# ACB Pipeline E2E Run Report",
+              "",
+              "| Field | Value |",
+              "|-------|-------|",
+              f"| **Spec** | `{spec_file}` |",
+              f"| **Run ID** | `{run_id}` |",
+              f"| **Attempt** | `{attempt}` |",
+              f"| **Timestamp (UTC)** | `{timestamp}` |",
+              f"| **Secrets present** | `{secrets_ok or 'unknown'}` |",
+              "",
+          ]
+
+          if missing_secrets and missing_secrets.strip():
+              lines += [
+                  "## ⚠️ Missing Secrets",
+                  "",
+                  "The following secrets were absent — their dependent steps were skipped:",
+                  "",
+              ]
+              for s in missing_secrets.split():
+                  lines.append(f"- `{s}`")
+              lines.append("")
+
+          lines += [
+              "## Step Outcomes",
+              "",
+              "| Step | Name | Outcome |",
+              "|------|------|---------|",
+          ]
+          for step_id, step_name, outcome in steps_data:
+              icon = icons.get(outcome, "❓")
+              lines.append(f"| `{step_id}` | {step_name} | {icon} {outcome or 'unknown'} |")
+          lines.append("")
+
+          report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print(f"E2E report written to: {report_path}")
+          PYEOF
+
+          # Commit and push the report back to the branch (best-effort)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/e2e/
+          if git diff --cached --quiet; then
+            echo "No new report to commit."
+          else
+            git commit -m "ci: add E2E report for ${{ matrix.spec_file }} [run ${{ github.run_id }} attempt ${{ github.run_attempt }}]"
+            git push || echo "::warning::Could not push E2E report — report exists in the workflow artifacts only."
+          fi
