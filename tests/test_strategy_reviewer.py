@@ -387,10 +387,12 @@ class TestCLI:
         assert "reviewed_at" in output
 
     def test_warn_verdict_still_returns_0(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         spec_file = tmp_path / "spec.yaml"
         spec_file.write_text(MINIMAL_SPEC_YAML)
+        # FIXED: set fake key so the no-key-stub branch is not taken and the mock runs
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-for-mock")
 
         with patch.object(strategy_reviewer, "CACHE_DIR", tmp_path / "cache"):
             with patch.object(strategy_reviewer, "_run_fallback_chain", return_value=WARN_RESULT):
@@ -402,10 +404,12 @@ class TestCLI:
         assert output["verdict"] == "WARN"
 
     def test_srv_w050_fallback_returns_0(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         spec_file = tmp_path / "spec.yaml"
         spec_file.write_text(MINIMAL_SPEC_YAML)
+        # FIXED: set fake key so the no-key-stub branch is not taken and the mock runs
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-for-mock")
 
         with patch.object(strategy_reviewer, "CACHE_DIR", tmp_path / "cache"):
             with patch.object(strategy_reviewer, "_run_fallback_chain", return_value=_FALLBACK_RESULT):
