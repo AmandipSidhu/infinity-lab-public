@@ -252,7 +252,7 @@ jobs:
 
       - name: Human review and artifacts
         id: human-review
-        if: steps.qc-upload-eval.outcome == 'success'
+        if: steps.install-deps.outcome == 'success' && steps.qc-upload-eval.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
