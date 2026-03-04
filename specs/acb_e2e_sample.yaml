@@ -19,7 +19,7 @@ strategy:
   universe:
     symbols:
       - SPY
-    resolution: day
+    resolution: daily
 
   signals:
     entry:
@@ -46,7 +46,7 @@ strategy:
     start_date: "2020-01-01"
     end_date: "2024-12-31"
     initial_capital: 10000
-    min_trades: 50
+    min_trades: 100
     benchmark: SPY
 
   data_requirements:
@@ -58,4 +58,4 @@ strategy:
     - Sharpe ratio >= 1.0 over backtest period
     - Max drawdown <= 20%
     - Win rate >= 50%
-    - Min 50 trades executed
+    - Min 100 trades executed
