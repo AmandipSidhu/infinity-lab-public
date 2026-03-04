@@ -5,6 +5,15 @@
 #
 # aider-chat==0.84.0 declares openai==1.75.0 as its exact dependency, so
 # both pins are consistent.  Bump both together when upgrading aider.
+#
+# semgrep>=1.87.0 introduced rich~=13.5.2 which conflicts with
+# aider-chat's rich==14.0.0.  semgrep==1.75.0 is the latest version that
+# allows rich>=12.6.0 and has no opentelemetry/pydantic transitive conflicts.
+# Upgrade semgrep and raise semgrep>=1.0.0 in requirements.txt once
+# aider-chat ships with a compatible rich constraint (>=13.5.2 or >=14).
+# distro==1.9.0 is pinned explicitly so pip does not backtrack on it.
 
 openai==1.75.0
 aider-chat==0.84.0
+semgrep==1.75.0
+distro==1.9.0
