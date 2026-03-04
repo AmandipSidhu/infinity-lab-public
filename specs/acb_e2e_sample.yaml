@@ -1,0 +1,61 @@
+# E2E test spec — triggers the ACB pipeline end-to-end to validate the full run
+# including the persisted E2E Step Report under reports/e2e/
+# retrigger: 1
+
+metadata:
+  name: acb_e2e_sample
+  version: "1.0.0"
+  description: >-
+    Minimal sample spec used to trigger the ACB pipeline end-to-end.
+    Validates that the workflow runs all steps (or skips secret-dependent ones
+    gracefully) and always produces a persisted markdown report under
+    reports/e2e/acb_e2e_sample/.
+  author: infinity-lab
+  created_at: "2026-03-04"
+
+strategy:
+  type: momentum
+
+  universe:
+    symbols:
+      - SPY
+    resolution: day
+
+  signals:
+    entry:
+      conditions:
+        - "Close price > 50-period SMA"
+    exit:
+      conditions:
+        - "Close price < 50-period SMA"
+
+  risk_management:
+    stop_loss: 0.05
+    take_profit: 0.10
+    max_position_size: 0.10
+    max_drawdown: 0.20
+    max_leverage: 1.0
+    position_sizing: fixed_fractional
+
+  performance_targets:
+    sharpe_ratio_min: 1.0
+    max_drawdown_threshold: 0.20
+    win_rate_min: 0.50
+
+  backtesting:
+    start_date: "2020-01-01"
+    end_date: "2024-12-31"
+    initial_capital: 10000
+    min_trades: 50
+    benchmark: SPY
+
+  data_requirements:
+    indicators:
+      - SMA(50)
+    min_history_days: 55
+
+  acceptance_criteria:
+    - Sharpe ratio >= 1.0 over backtest period
+    - Max drawdown <= 20%
+    - Win rate >= 50%
+    - Min 50 trades executed
