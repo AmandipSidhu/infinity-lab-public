@@ -518,6 +518,10 @@ def build_summary(spec_path: str, findings: list[dict[str, str]]) -> dict[str, A
     warnings = [f for f in findings if f["severity"] == "WARNING"]
     return {
         "spec_file": spec_path,
+        # FIXED: added valid/errors/warnings keys alongside existing fields for CLI consumers
+        "valid": len(errors) == 0,
+        "errors": [f["message"] for f in errors],
+        "warnings": [f["message"] for f in warnings],
         "result": "FAIL" if errors else "PASS",
         "error_count": len(errors),
         "warning_count": len(warnings),
@@ -533,16 +537,31 @@ def build_summary(spec_path: str, findings: list[dict[str, str]]) -> dict[str, A
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
 
-    if len(args) == 2 and args[0] == "--spec":
-        spec_path = args[1]
-    elif len(args) == 1 and not args[0].startswith("--"):
-        spec_path = args[0]
-    else:
-        print(
-            json.dumps({"error": "Usage: spec_validator.py --spec <path/to/spec.yaml>"}),
-            file=sys.stderr,
-        )
-        return 2
+    # FIXED: parse --output flag alongside --spec so consumers can write JSON to a file
+    spec_path: str | None = None
+    output_path: str | None = None
+    positional: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--spec" and i + 1 < len(args):
+            spec_path = args[i + 1]
+            i += 2
+        elif args[i] == "--output" and i + 1 < len(args):
+            output_path = args[i + 1]
+            i += 2
+        else:
+            positional.append(args[i])
+            i += 1
+
+    if spec_path is None:
+        if len(positional) == 1:
+            spec_path = positional[0]
+        else:
+            print(
+                json.dumps({"error": "Usage: spec_validator.py --spec <path/to/spec.yaml> [--output <path>]"}),
+                file=sys.stderr,
+            )
+            return 2
 
     if not os.path.isfile(spec_path):
         print(
@@ -564,7 +583,12 @@ def main(argv: list[str] | None = None) -> int:
 
     findings = validate_spec(spec)
     summary = build_summary(spec_path, findings)
-    print(json.dumps(summary, indent=2))
+    json_output = json.dumps(summary, indent=2)
+    if output_path:
+        with open(output_path, "w", encoding="utf-8") as out_fh:
+            out_fh.write(json_output)
+    else:
+        print(json_output)
 
     return 1 if summary["result"] == "FAIL" else 0
 

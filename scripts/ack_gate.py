@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# DEPRECATED: ack_gate is no longer called by the pipeline.
+# Retained for reference only. See PR #48 for removal rationale.
 """Ack Gate — Single acknowledgment gate for build pipeline WARNings.
 
 Workflow:

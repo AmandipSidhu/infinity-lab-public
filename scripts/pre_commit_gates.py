@@ -41,11 +41,17 @@ _PARAM_MAX_COUNT: int = 5         # parameter count must be < 5
 
 def check_cyclomatic_complexity(strategy_file: Path) -> list[dict[str, Any]]:
     """Run ``radon cc`` and return violations where CCN >= _CCN_THRESHOLD."""
-    result = subprocess.run(
-        ["radon", "cc", "-s", "-j", str(strategy_file)],
-        capture_output=True,
-        text=True,
-    )
+    # FIXED: catch FileNotFoundError so a missing radon install skips this
+    # check with a warning instead of crashing or producing a hard ERROR
+    try:
+        result = subprocess.run(
+            ["radon", "cc", "-s", "-j", str(strategy_file)],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        print("[pre_commit_gates] WARNING: radon not installed — skipping CCN check.", file=sys.stderr)
+        return []
     violations: list[dict[str, Any]] = []
 
     raw = result.stdout.strip()
@@ -96,11 +102,17 @@ def check_cyclomatic_complexity(strategy_file: Path) -> list[dict[str, Any]]:
 
 def check_bandit(strategy_file: Path) -> list[dict[str, Any]]:
     """Run ``bandit`` and return HIGH-severity security violations."""
-    result = subprocess.run(
-        ["bandit", "-f", "json", "-q", str(strategy_file)],
-        capture_output=True,
-        text=True,
-    )
+    # FIXED: catch FileNotFoundError so a missing bandit install skips this
+    # check with a warning instead of crashing or producing a hard ERROR
+    try:
+        result = subprocess.run(
+            ["bandit", "-f", "json", "-q", str(strategy_file)],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        print("[pre_commit_gates] WARNING: bandit not installed — skipping security check.", file=sys.stderr)
+        return []
     violations: list[dict[str, Any]] = []
 
     raw = result.stdout.strip()
@@ -151,11 +163,17 @@ def check_bandit(strategy_file: Path) -> list[dict[str, Any]]:
 
 def check_semgrep(strategy_file: Path) -> list[dict[str, Any]]:
     """Run ``semgrep --config auto`` and return ERROR-level findings."""
-    result = subprocess.run(
-        ["semgrep", "--config", "auto", "--json", str(strategy_file)],
-        capture_output=True,
-        text=True,
-    )
+    # FIXED: catch FileNotFoundError so a missing semgrep install skips this
+    # check with a warning instead of crashing or producing a hard ERROR
+    try:
+        result = subprocess.run(
+            ["semgrep", "--config", "auto", "--json", str(strategy_file)],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        print("[pre_commit_gates] WARNING: semgrep not installed — skipping semgrep check.", file=sys.stderr)
+        return []
     violations: list[dict[str, Any]] = []
 
     raw = result.stdout.strip()

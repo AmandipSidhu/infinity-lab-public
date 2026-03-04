@@ -11,9 +11,10 @@
 # allows rich>=12.6.0 and has no opentelemetry/pydantic transitive conflicts.
 # Upgrade semgrep and raise semgrep>=1.0.0 in requirements.txt once
 # aider-chat ships with a compatible rich constraint (>=13.5.2 or >=14).
-# distro==1.9.0 is pinned explicitly so pip does not backtrack on it.
+# FIXED: removed distro==1.9.0 explicit pin — aider-chat==0.84.0 already
+# requires distro==1.9.0 transitively; the redundant pin caused
+# ResolutionImpossible in CI when pip could not find distro==1.9.0 indexed.
 
 openai==1.75.0
 aider-chat==0.84.0
 semgrep==1.75.0
-distro==1.9.0
