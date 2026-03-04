@@ -29,21 +29,55 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "${{ inputs.spec_file }}" ]; then
-            SPECS_JSON=$(jq -cn --arg s "${{ inputs.spec_file }}" '[\$s]')
+            SPECS_JSON=$(jq -cn --arg s "${{ inputs.spec_file }}" '[$s]')
           else
             BEFORE="${{ github.event.before }}"
             AFTER="${{ github.sha }}"
-            SPECS_JSON=$(git diff --name-only "$BEFORE" "$AFTER" -- 'specs/**/*.yaml' 'specs/**/*.yml' | jq -Rcn '[inputs]')
+            # Determine a reliable base commit for the diff, handling edge cases:
+            #   - all-zeros BEFORE: new branch first push, force push, or initial push
+            #   - unreachable BEFORE: shallow-clone edge cases or cross-repo events
+            fallback_base() {
+              git fetch origin main --depth=1 2>/dev/null || echo "Warning: could not fetch origin/main" >&2
+              local base
+              if base=$(git merge-base HEAD origin/main 2>/dev/null); then
+                echo "Using merge-base with origin/main as BASE" >&2
+                echo "$base"
+              elif base=$(git rev-parse HEAD~1 2>/dev/null); then
+                echo "HEAD~1 not reachable from origin/main; using HEAD~1 as BASE" >&2
+                echo "$base"
+              else
+                echo "No reachable parent found (initial commit?); will use empty-tree as BASE" >&2
+                echo ""
+              fi
+            }
+            if [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]]; then
+              echo "github.event.before is absent or all-zeros; finding merge-base with origin/main"
+              BASE=$(fallback_base)
+            elif ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              echo "BEFORE commit $BEFORE not reachable; finding merge-base with origin/main"
+              BASE=$(fallback_base)
+            else
+              BASE="$BEFORE"
+            fi
+            if [ -z "$BASE" ]; then
+              # No reachable parent (initial commit); use git's well-known empty-tree SHA
+              # so the diff lists all files added in the very first commit.
+              BASE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+            fi
+            # Use grep to match specs at any depth (avoids glob-depth issues with specs/**/*.yaml).
+            # { ... || true; } prevents grep's exit code 1 (no match) from aborting via pipefail.
+            SPECS_JSON=$(git diff --name-only "$BASE" "$AFTER" | { grep -E '^specs/.*\.ya?ml$' || true; } | jq -Rcn '[inputs]')
           fi
           if [ "$SPECS_JSON" = "[]" ]; then
-            echo "::error::No spec files found in specs/ for this push"
-            exit 1
+            echo "No spec files changed in this push — skipping pipeline." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Found spec files: $SPECS_JSON"
           fi
           echo "matrix_specs=$SPECS_JSON" >> "$GITHUB_OUTPUT"
-          echo "Found spec files: $SPECS_JSON"
 
   acb-pipeline:
     needs: detect-specs
+    if: needs.detect-specs.outputs.matrix_specs != '[]'
     runs-on: ubuntu-latest
     continue-on-error: false
     permissions:
