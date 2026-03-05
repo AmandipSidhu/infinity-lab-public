@@ -46,6 +46,7 @@ from aider_builder import (  # noqa: E402
     _backoff_wait,
     _build_aider_cmd,
     _build_aider_prompt,
+    _commit_and_push,
     _detect_api_unavailable,
     _detect_daily_limit,
     _detect_rate_limit,
@@ -270,18 +271,75 @@ class TestWriteStepSummary:
 
 
 # ---------------------------------------------------------------------------
+# _commit_and_push
+# ---------------------------------------------------------------------------
+
+
+class TestCommitAndPush:
+    def _make_run(self, returncode: int) -> MagicMock:
+        m = MagicMock()
+        m.returncode = returncode
+        return m
+
+    def test_commits_and_pushes_when_diff_is_nonempty(self) -> None:
+        """When git diff --cached --quiet exits non-zero (changes staged), commit and push."""
+        with patch("aider_builder.subprocess.run") as mock_run:
+            mock_run.return_value = self._make_run(1)  # diff exit 1 → changes present
+            _commit_and_push("my_strat", 1, "some-model")
+
+        calls = mock_run.call_args_list
+        cmds = [c[0][0] for c in calls]
+        assert ["git", "config", "user.name", "github-actions[bot]"] in cmds
+        assert ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"] in cmds
+        assert ["git", "add", "strategies/my_strat.py", "tests/test_my_strat.py"] in cmds
+        commit_cmds = [c for c in cmds if c[0:2] == ["git", "commit"]]
+        assert len(commit_cmds) == 1
+        assert "feat(strategies): aider build my_strat via tier 1 (some-model)" in commit_cmds[0]
+        push_cmds = [c for c in cmds if c == ["git", "push"]]
+        assert len(push_cmds) == 1
+
+    def test_skips_commit_when_no_staged_changes(self) -> None:
+        """When git diff --cached --quiet exits 0 (nothing staged), skip commit and push."""
+        with patch("aider_builder.subprocess.run") as mock_run:
+            mock_run.return_value = self._make_run(0)  # diff exit 0 → no changes
+            _commit_and_push("my_strat", 2, "other-model")
+
+        calls = mock_run.call_args_list
+        cmds = [c[0][0] for c in calls]
+        commit_cmds = [c for c in cmds if len(c) > 1 and c[1] == "commit"]
+        push_cmds = [c for c in cmds if c == ["git", "push"]]
+        assert len(commit_cmds) == 0
+        assert len(push_cmds) == 0
+
+    def test_commit_message_format(self) -> None:
+        """Commit message follows the required format."""
+        with patch("aider_builder.subprocess.run") as mock_run:
+            mock_run.return_value = self._make_run(1)
+            _commit_and_push("vwap_probe", 3, "openai/gpt-4o")
+
+        calls = mock_run.call_args_list
+        cmds = [c[0][0] for c in calls]
+        commit_cmds = [c for c in cmds if c[0:2] == ["git", "commit"]]
+        assert len(commit_cmds) == 1
+        msg = commit_cmds[0][-1]
+        assert msg == "feat(strategies): aider build vwap_probe via tier 3 (openai/gpt-4o)"
+
+
+# ---------------------------------------------------------------------------
 # run_tier_1
 # ---------------------------------------------------------------------------
 
 
 class TestRunTier1:
     def test_success_first_iteration(self, tmp_path: Path) -> None:
-        with patch("aider_builder._run_aider", return_value=_ok()):
+        with patch("aider_builder._run_aider", return_value=_ok()), \
+             patch("aider_builder._commit_and_push") as mock_cap:
             result = run_tier_1(VALID_SPEC, "valid_001")
         assert result.success is True
         assert result.tier == 1
         assert result.model == _TIER1_MODEL
         assert result.iterations_used == 1
+        mock_cap.assert_called_once_with("valid_001", 1, _TIER1_MODEL)
 
     def test_escalates_on_timeout(self, tmp_path: Path) -> None:
         with patch(
@@ -345,11 +403,13 @@ class TestRunTier1:
 
 class TestRunTier2:
     def test_success_first_iteration(self) -> None:
-        with patch("aider_builder._run_aider", return_value=_ok()):
+        with patch("aider_builder._run_aider", return_value=_ok()), \
+             patch("aider_builder._commit_and_push") as mock_cap:
             result = run_tier_2(VALID_SPEC, "valid_001")
         assert result.success is True
         assert result.tier == 2
         assert result.model == _TIER2_MODEL
+        mock_cap.assert_called_once_with("valid_001", 2, _TIER2_MODEL)
 
     def test_escalates_on_timeout(self) -> None:
         with patch(
@@ -393,11 +453,13 @@ class TestRunTier2:
 
 class TestRunTier3:
     def test_success_first_iteration(self) -> None:
-        with patch("aider_builder._run_aider", return_value=_ok()):
+        with patch("aider_builder._run_aider", return_value=_ok()), \
+             patch("aider_builder._commit_and_push") as mock_cap:
             result = run_tier_3(VALID_SPEC, "valid_001")
         assert result.success is True
         assert result.tier == 3
         assert result.model == _TIER3_MODEL
+        mock_cap.assert_called_once_with("valid_001", 3, _TIER3_MODEL)
 
     def test_escalates_on_stuck_pattern(self) -> None:
         # Same pass rate for _STUCK_ITERATIONS_THRESHOLD + 1 iterations (need prev to be set first).
@@ -451,11 +513,13 @@ class TestRunTier3:
 
 class TestRunTier4:
     def test_success_first_iteration(self) -> None:
-        with patch("aider_builder._run_aider", return_value=_ok()):
+        with patch("aider_builder._run_aider", return_value=_ok()), \
+             patch("aider_builder._commit_and_push") as mock_cap:
             result = run_tier_4(VALID_SPEC, "valid_001")
         assert result.success is True
         assert result.tier == 4
         assert result.model == _TIER4_MODEL
+        mock_cap.assert_called_once_with("valid_001", 4, _TIER4_MODEL)
 
     def test_all_tiers_exhausted(self) -> None:
         outputs = [_fail("Error: could not complete task")] * _MAX_ITERATIONS
@@ -467,7 +531,8 @@ class TestRunTier4:
 
     def test_success_on_later_iteration(self) -> None:
         outputs = [_fail("Error: not yet")] * 5 + [_ok()]
-        with patch("aider_builder._run_aider", side_effect=outputs):
+        with patch("aider_builder._run_aider", side_effect=outputs), \
+             patch("aider_builder._commit_and_push"):
             result = run_tier_4(VALID_SPEC, "valid_001")
         assert result.success is True
         assert result.iterations_used == 6
@@ -503,12 +568,14 @@ class TestBuild:
              patch("aider_builder.run_tier_3", return_value=fail_result_3), \
              patch("aider_builder.run_tier_4", return_value=fail_result_4), \
              patch("aider_builder._write_stub_strategy") as mock_stub, \
+             patch("aider_builder._commit_and_push") as mock_cap, \
              patch("aider_builder._write_step_summary") as mock_summary:
             mock_stub.return_value = Path("strategies/valid_001.py")
             result = build(str(VALID_SPEC))
 
         assert result is True  # stub written → exits 0 so downstream steps run
         mock_stub.assert_called_once()
+        mock_cap.assert_called_once_with("valid_001", 4, _TIER4_MODEL)
         mock_summary.assert_called_once()
         call_args = mock_summary.call_args[0]
         assert call_args[5] is True  # success=True (stub counts as success)
