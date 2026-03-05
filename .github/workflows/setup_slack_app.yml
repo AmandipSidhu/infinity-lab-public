@@ -1,0 +1,42 @@
+name: Setup Slack App
+
+on:
+  workflow_dispatch:
+    inputs:
+      config_token:
+        description: "Slack app configuration token (xoxe-1-...)"
+        required: true
+        type: string
+
+jobs:
+  setup-slack-app:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create Slack app
+        id: create_app
+        run: |
+          python scripts/setup_slack_app.py --config-token "${{ inputs.config_token }}" | tee /tmp/slack_output.txt
+          echo "output_file=/tmp/slack_output.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Write bot token to Step Summary
+        run: |
+          echo "## Slack App Setup Output" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/slack_output.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> **Note:** Copy the Bot Token above and update the \`SLACK_BOT_TOKEN\` GitHub secret." >> "$GITHUB_STEP_SUMMARY"
