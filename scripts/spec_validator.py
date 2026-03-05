@@ -29,6 +29,9 @@ import yaml
 # Constants
 # ---------------------------------------------------------------------------
 
+# SVR-E000 is a special "root type" sentinel: emitted when the spec root is
+# not a YAML mapping (dict), preventing all further section-level checks.
+
 ALLOWED_TRADING_STYLES: set[str] = {"day_trade", "swing", "position"}
 
 ALLOWED_RESOLUTIONS: set[str] = {"tick", "second", "minute", "hour", "daily"}
@@ -409,7 +412,8 @@ def _check_data(spec: dict[str, Any]) -> list[dict[str, str]]:
         if start_date >= end_date:
             findings.append(_finding(
                 "SVR-E060", "ERROR",
-                f"data.start_date ({start_date}) must be strictly before data.end_date ({end_date})",
+                f"data.start_date ({start_date}) must be strictly before data.end_date ({end_date}); "
+                "equal dates produce a zero-length backtest range",
                 "data.start_date",
             ))
         else:
