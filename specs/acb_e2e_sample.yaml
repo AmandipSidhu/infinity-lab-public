@@ -1,6 +1,6 @@
 # E2E test spec — triggers the ACB pipeline end-to-end to validate the full run
 # including the persisted E2E Step Report under reports/e2e/
-# retrigger: 2
+# retrigger: 5
 
 metadata:
   name: acb_e2e_sample
