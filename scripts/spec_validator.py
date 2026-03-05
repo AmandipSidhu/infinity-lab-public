@@ -110,6 +110,11 @@ _NUMERIC_RE: re.Pattern[str] = re.compile(r"\d")
 DATE_FMT = "%Y-%m-%d"
 _MIN_RANGE_ERROR_YEARS = 2.0   # SVR-E059 threshold
 _MIN_RANGE_WARNING_YEARS = 5.0  # SVR-W050 threshold
+_DAYS_PER_YEAR = 365.25         # Gregorian average
+_MIN_SPEC_BODY_LENGTH = 200     # SVR-W061 threshold
+
+# Margin/futures mention pattern — SVR-E026.
+_MARGIN_FUTURES_RE: re.Pattern[str] = re.compile(r"\bmargin\b|\bfutures\b", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +156,7 @@ def _parse_date(value: Any) -> date | None:
 
 
 def _years_between(d1: date, d2: date) -> float:
-    return (d2 - d1).days / 365.25
+    return (d2 - d1).days / _DAYS_PER_YEAR
 
 
 def _is_positive_number(value: Any) -> bool:
@@ -606,7 +611,7 @@ def _check_risk_management(spec: dict[str, Any]) -> list[dict[str, str]]:
         str(notes) if isinstance(notes, str) else "",
         str(description) if isinstance(description, str) else "",
     ]))
-    if re.search(r"\bmargin\b|\bfutures\b", search_text, re.IGNORECASE) and leverage is None:
+    if _MARGIN_FUTURES_RE.search(search_text) and leverage is None:
         findings.append(_finding(
             "SVR-E026", "ERROR",
             "Spec mentions 'margin' or 'futures' but risk_management.leverage is absent",
@@ -751,11 +756,11 @@ def _check_general(spec: dict[str, Any]) -> list[dict[str, str]]:
     except Exception:
         body = str(spec)
 
-    if len(body) < 200:
+    if len(body) < _MIN_SPEC_BODY_LENGTH:
         findings.append(_finding(
             "SVR-W061", "WARNING",
             f"Spec body is only {len(body)} characters; a thorough spec should be "
-            "at least 200 characters",
+            f"at least {_MIN_SPEC_BODY_LENGTH} characters",
             "",
         ))
 
