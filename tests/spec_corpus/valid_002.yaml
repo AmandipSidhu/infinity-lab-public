@@ -1,62 +1,57 @@
+# valid_002.yaml — Swing trading strategy with all required fields.
+# Expected: zero errors, zero warnings.
+
 metadata:
-  name: "RSI Mean Reversion"
-  version: "2.1.0"
-  author: "John Smith"
-  created_at: "2025-11-01"
+  name: "52-Week High Breakout Swing"
+  trading_style: "swing"
   description: >
-    A mean-reversion strategy using RSI oversold/overbought signals on
-    large-cap equities. Enters long when RSI(14) drops below 30 and exits
-    when RSI(14) recovers above 55. Uses tight position sizing and stop-loss
-    to control downside risk.
+    A swing trading strategy that buys breakouts above the 52-week high when
+    confirmed by elevated volume. Positions are held for two to twenty trading
+    days and closed via a fixed-percentage stop or a time-based exit. Designed
+    for liquid large- and mid-cap US equities on daily bars.
+  author: "John Smith"
+  version: "2.0.0"
 
-strategy:
-  type: "mean_reversion"
+capital:
+  allocation_pct: 0.25
 
-  universe:
-    symbols:
-      - "SPY"
-      - "QQQ"
-      - "IWM"
-      - "DIA"
-    resolution: "daily"
-    market: "equities"
+data:
+  instruments:
+    - "SPY"
+    - "QQQ"
+    - "IWM"
+  resolution: "daily"
+  start_date: "2015-01-01"
+  end_date: "2024-12-31"
 
-  signals:
-    entry:
-      conditions:
-        - "RSI(14) < 30"
-        - "price is above 200-day SMA"
-      logic: "AND"
-    exit:
-      conditions:
-        - "RSI(14) > 55"
-        - "stop-loss at 3% below entry price"
-      logic: "OR"
+signals:
+  entry:
+    - "Price closes above the 52-week high by more than 2%"
+    - "Volume on breakout day is at least 1.5x the 20-day average volume"
+    - "RSI(14) > 55 and RSI(14) < 75"
+  exit:
+    - "Price falls more than 8% below entry price (hard stop)"
+    - "Holding period exceeds 20 bars"
+    - "RSI(14) > 80 (profit-taking)"
 
-  risk_management:
-    position_sizing: "volatility_adjusted"
-    max_position_size: 0.08
-    stop_loss: 0.03
-    take_profit: 0.09
-    max_drawdown: 0.15
-    max_leverage: 1.0
+risk_management:
+  stop_loss:
+    pct: 0.08
+    atr_multiplier: 2.0
+  position_sizing: "Fixed fractional 2% of portfolio equity per trade"
+  leverage: 1.0
+  max_positions: 5
+  risk_per_trade_pct: 0.02
 
-  performance_targets:
-    sharpe_ratio_min: 1.5
-    win_rate_min: 0.60
-    max_drawdown_threshold: 0.15
+acceptance_criteria:
+  max_drawdown_pct: 20.0
+  min_sharpe_ratio: 1.2
+  min_profit_factor: 1.4
+  min_trades: 150
+  min_cagr: 15.0
 
-  backtesting:
-    start_date: "2018-01-01"
-    end_date: "2024-06-30"
-    initial_capital: 250000
-    min_trades: 500
-    benchmark: "SPY"
+assumptions:
+  fees: 0.0005
+  slippage: 0.001
 
-  data_requirements:
-    resolution: "daily"
-    min_history_days: 252
-    indicators:
-      - "RSI(14)"
-      - "SMA(200)"
-      - "ATR(14)"
+notes: "Swing trades are held for two to twenty calendar days."

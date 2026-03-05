@@ -1,60 +1,60 @@
+# valid_001.yaml — Day-trade strategy with all required fields.
+# Expected: zero errors, zero warnings.
+
 metadata:
-  name: "Golden Cross Momentum"
-  version: "1.0.0"
-  author: "Jane Doe"
-  created_at: "2026-01-15"
+  name: "VWAP Reversion Day Trade"
+  trading_style: "day_trade"
   description: >
-    A classic golden-cross momentum strategy that goes long when the 50-day SMA
-    crosses above the 200-day SMA and exits when the 50-day SMA crosses below.
-    Designed for S&P 500 constituents on daily bars.
+    A day trading strategy that fades intraday VWAP deviations on high-volume
+    large-cap stocks. Enters long when price deviates more than 1.5% below VWAP
+    with elevated volume confirmation, exits when price returns to VWAP or after
+    45 minutes, whichever comes first.
+  author: "Jane Doe"
+  version: "1.0.0"
 
-strategy:
-  type: "momentum"
+capital:
+  allocation_usd: 50000
 
-  universe:
-    symbols:
-      - "AAPL"
-      - "MSFT"
-      - "GOOGL"
-    resolution: "daily"
-    market: "equities"
+constraints:
+  max_holding_minutes: 60
+  close_eod: true
 
-  signals:
-    entry:
-      conditions:
-        - "50-day SMA crosses above 200-day SMA"
-        - "RSI(14) < 70"
-      logic: "AND"
-    exit:
-      conditions:
-        - "50-day SMA crosses below 200-day SMA"
-        - "RSI(14) > 80"
-      logic: "OR"
+data:
+  instruments:
+    - "AAPL"
+    - "MSFT"
+    - "TSLA"
+  resolution: "minute"
+  start_date: "2019-01-01"
+  end_date: "2024-12-31"
 
-  risk_management:
-    position_sizing: "percentage"
-    max_position_size: 0.10
-    stop_loss: 0.05
-    take_profit: 0.15
-    max_drawdown: 0.20
-    max_leverage: 1.0
+signals:
+  entry:
+    - "Price deviates more than 1.5% below VWAP with volume > 2x 20-period average"
+    - "RSI(5) < 30 on 1-minute chart"
+  exit:
+    - "Price returns within 0.3% of VWAP"
+    - "Time since entry > 45 minutes"
+    - "Stop-loss at 0.5% below entry price"
 
-  performance_targets:
-    sharpe_ratio_min: 1.2
-    win_rate_min: 0.55
-    max_drawdown_threshold: 0.20
+risk_management:
+  stop_loss:
+    pct: 0.005
+    atr_multiplier: 1.5
+  position_sizing: "1% of account equity per trade, max 3 positions simultaneously"
+  leverage: 1.0
+  max_positions: 3
+  risk_per_trade_pct: 0.01
 
-  backtesting:
-    start_date: "2015-01-01"
-    end_date: "2024-12-31"
-    initial_capital: 100000
-    min_trades: 200
-    benchmark: "SPY"
+acceptance_criteria:
+  max_drawdown_pct: 10.0
+  min_sharpe_ratio: 1.5
+  min_profit_factor: 1.5
+  min_trades: 300
+  min_cagr: 25.0
 
-  data_requirements:
-    resolution: "daily"
-    min_history_days: 504
-    indicators:
-      - "SMA(50)"
-      - "SMA(200)"
-      - "RSI(14)"
+assumptions:
+  fees: 0.001
+  slippage: 0.0005
+
+notes: "Strategy runs during regular NYSE trading hours only (9:30–16:00 ET)."

@@ -1,61 +1,52 @@
 # invalid_003_ambiguous_signals.yaml
-# Expected errors: SVR-E030 (ambiguous language in entry conditions)
-# Expected warnings: SVR-W011 (min_trades < 1000), SVR-W008 (no benchmark),
-#                    SVR-W023 (no numeric threshold in some exit conditions)
+# Expected errors (new schema):
+#   SVR-E034 (banned vague term "trending" in entry condition)
+# Expected warnings (new schema):
+#   SVR-W030 (no time-based exit condition)
 
 metadata:
-  name: "Feel-Good Momentum"
-  version: "1.0.0"
-  author: "Gut Trader"
-  created_at: "2026-01-20"
+  name: "Vague Trend Follower"
+  trading_style: "swing"
   description: >
-    A momentum strategy that buys when the market looks good and the conditions
-    seem right. Exits when things look bad or when the portfolio feels overextended.
+    A strategy with deliberately ambiguous signal language to trigger SVR-E034.
+    Entry conditions use the banned term "trending" and exit conditions contain
+    no time-based criterion to trigger SVR-W030.
+  author: "Gut Trader"
+  version: "1.0.0"
 
-strategy:
-  type: "momentum"
+capital:
+  allocation_usd: 50000
 
-  universe:
-    symbols:
-      - "SPY"
-      - "QQQ"
-    resolution: "daily"
+data:
+  instruments:
+    - "SPY"
+    - "QQQ"
+  resolution: "daily"
+  start_date: "2018-01-01"
+  end_date: "2024-12-31"
 
-  signals:
-    entry:
-      conditions:
-        - "market looks good and momentum seems right"   # ERROR SVR-E030: vague language
-        - "RSI(14) > 50"
-      logic: "AND"
-    exit:
-      conditions:
-        - "when appropriate to exit"                     # ERROR SVR-E030: vague language
-        - "RSI(14) < 45"
-      logic: "OR"
+signals:
+  entry:
+    - "Enter when the stock is clearly trending with volume above 1.5x average"  # SVR-E034: 'trending'
+    - "RSI(14) > 50"
+  exit:
+    - "Exit when price drops below the 20-day SMA"     # no time keyword — SVR-W030
+    - "Exit when RSI(14) crosses below 40"             # no time keyword — SVR-W030
 
-  risk_management:
-    position_sizing: "percentage"
-    max_position_size: 0.10
-    stop_loss: 0.05
-    take_profit: 0.12
-    max_drawdown: 0.20
-    max_leverage: 1.0
+risk_management:
+  stop_loss: 0.05
+  position_sizing: "2% risk per trade"
+  leverage: 1.0
+  max_positions: 5
+  risk_per_trade_pct: 0.02
 
-  performance_targets:
-    sharpe_ratio_min: 1.1
-    win_rate_min: 0.52
-    max_drawdown_threshold: 0.20
+acceptance_criteria:
+  max_drawdown_pct: 20.0
+  min_sharpe_ratio: 1.2
+  min_profit_factor: 1.4
+  min_trades: 200
+  min_cagr: 15.0
 
-  backtesting:
-    start_date: "2020-01-01"
-    end_date: "2024-12-31"
-    initial_capital: 50000
-    min_trades: 100           # WARN SVR-W011: < 1000
-    # benchmark missing       # WARN SVR-W008
-
-  data_requirements:
-    resolution: "daily"
-    min_history_days: 252
-    indicators:
-      - "RSI(14)"
-      - "SMA(50)"
+assumptions:
+  fees: 0.001
+  slippage: 0.001

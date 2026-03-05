@@ -4,12 +4,17 @@
 Validation rules are defined in docs/SPEC_VALIDATION_RULES.md.
 Schema reference is in docs/SPEC_TEMPLATE.md.
 
+New top-level schema sections (NOT nested under ``strategy``):
+  metadata, capital, constraints, data, signals, risk_management,
+  acceptance_criteria, assumptions, notes
+
 Exit codes:
   0 — No errors (warnings may be present)
   1 — One or more ERROR-level findings
   2 — Unrecoverable file or YAML parse failure
 """
 
+import argparse
 import json
 import os
 import re
@@ -24,65 +29,94 @@ import yaml
 # Constants
 # ---------------------------------------------------------------------------
 
-ALLOWED_STRATEGY_TYPES: set[str] = {
-    "momentum",
-    "mean_reversion",
-    "trend_following",
-    "arbitrage",
-    "market_making",
-    "statistical_arb",
-    "pairs_trading",
-    "breakout",
-    "volatility",
+ALLOWED_TRADING_STYLES: set[str] = {"day_trade", "swing", "position"}
+
+ALLOWED_RESOLUTIONS: set[str] = {"tick", "second", "minute", "hour", "daily"}
+
+ALLOWED_SCREENER_CRITERIA: set[str] = {
+    "top_volume",
+    "gap_up_pct",
+    "relative_volume",
+    "float_under",
+    "custom",
 }
 
-ALLOWED_RESOLUTIONS: set[str] = {
-    "tick",
-    "second",
-    "minute",
-    "hour",
-    "daily",
-    "weekly",
-}
-
-# Vague / non-quantifiable language patterns — any match triggers SVR-E030.
-_VAGUE_PATTERNS: list[re.Pattern[str]] = [
+# Banned vague terms in signal conditions — SVR-E034 (word-boundary, case-insensitive).
+_BANNED_TERM_PATTERNS: list[re.Pattern[str]] = [
     re.compile(p, re.IGNORECASE)
     for p in [
+        r"\bmomentum\b",
+        r"\btrending\b",
+        r"\boversold\b",
+        r"\boverbought\b",
+        r"\bvolatile\b",
+        r"\breasonable\b",
+        r"\bappropriate\b",
+        r"\bapproximately\b",
         r"\bas needed\b",
-        r"\bwhen appropriate\b",
-        r"\bgood time\b",
-        r"\blooks good\b",
-        r"\bseems right\b",
-        r"\bfeels?\b",
-        r"\bintuition\b",
-        r"\bsometimes\b",
-        r"\buser.friendly\b",
-        r"\bmarket conditions? permit\b",
-        r"\bdiscretion\b",
-        r"\bwhenever possible\b",
-        r"\bat some point\b",
     ]
 ]
 
-# A condition is considered numeric if it contains at least one digit.
+# Lookahead bias patterns — SVR-E066.
+_LOOKAHEAD_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"next[ _]bar",
+        r"look.?ahead",
+    ]
+]
+
+# Non-deterministic entry patterns — SVR-E067.
+_NONDETERMINISTIC_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"\brandom\b",
+        r"coin.?flip",
+        r"roll.+die",
+    ]
+]
+
+# Unavailable / non-public data source patterns — SVR-E068.
+_UNAVAILABLE_DATA_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"level.?2\b",
+        r"dark.?pool",
+        r"\binsider\b",
+        r"news.+before.+release",
+    ]
+]
+
+# Time-based exit condition patterns — SVR-W030.
+_TIME_EXIT_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"\btime\b",
+        r"\bminutes?\b",
+        r"\bhours?\b",
+        r"\bbars?\b",
+        r"\bduration\b",
+        r"\bhold(?:ing)?\b",
+        r"\bsession\b",
+    ]
+]
+
+# A condition is considered to have a numeric threshold if it contains at least one digit.
 _NUMERIC_RE: re.Pattern[str] = re.compile(r"\d")
 
 DATE_FMT = "%Y-%m-%d"
+_MIN_RANGE_ERROR_YEARS = 2.0   # SVR-E059 threshold
+_MIN_RANGE_WARNING_YEARS = 5.0  # SVR-W050 threshold
 
 
 # ---------------------------------------------------------------------------
-# Finding dataclass-equivalent
+# Helpers
 # ---------------------------------------------------------------------------
 
 
 def _finding(code: str, severity: str, message: str, field: str = "") -> dict[str, str]:
+    """Return a finding dict with the standard four keys."""
     return {"code": code, "severity": severity, "message": message, "field": field}
-
-
-# ---------------------------------------------------------------------------
-# Rule implementations
-# ---------------------------------------------------------------------------
 
 
 def _get(data: Any, *keys: str) -> Any:
@@ -100,6 +134,11 @@ def _is_nonempty_str(value: Any) -> bool:
 
 
 def _parse_date(value: Any) -> date | None:
+    """Parse a YYYY-MM-DD string (or date/datetime object) into a date; None on failure."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
     if not isinstance(value, str):
         return None
     try:
@@ -108,489 +147,756 @@ def _parse_date(value: Any) -> date | None:
         return None
 
 
+def _years_between(d1: date, d2: date) -> float:
+    return (d2 - d1).days / 365.25
+
+
+def _is_positive_number(value: Any) -> bool:
+    """Return True if value can be cast to a float that is strictly > 0."""
+    try:
+        return value is not None and float(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Section-level check functions
+# ---------------------------------------------------------------------------
+
+
 def _check_metadata(spec: dict[str, Any]) -> list[dict[str, str]]:
+    """Metadata section: SVR-E001, E002, E005, W001, W002, W062."""
     findings: list[dict[str, str]] = []
     meta = spec.get("metadata")
 
-    if not isinstance(meta, dict) or not _is_nonempty_str(meta.get("name")):
-        findings.append(_finding("SVR-E001", "ERROR", "metadata.name is missing or empty", "metadata.name"))
+    # SVR-E001 / SVR-E002: trading_style
+    trading_style = _get(spec, "metadata", "trading_style")
+    if not _is_nonempty_str(trading_style):
+        findings.append(_finding(
+            "SVR-E001", "ERROR",
+            "metadata.trading_style is missing or empty",
+            "metadata.trading_style",
+        ))
+    elif trading_style not in ALLOWED_TRADING_STYLES:
+        allowed = ", ".join(sorted(ALLOWED_TRADING_STYLES))
+        findings.append(_finding(
+            "SVR-E002", "ERROR",
+            f"metadata.trading_style is invalid (got {trading_style!r}). Allowed: {allowed}",
+            "metadata.trading_style",
+        ))
 
-    if not isinstance(meta, dict) or not _is_nonempty_str(meta.get("version")):
-        findings.append(_finding("SVR-E002", "ERROR", "metadata.version is missing or empty", "metadata.version"))
-
-    if not isinstance(meta, dict) or not _is_nonempty_str(meta.get("description")):
-        findings.append(_finding("SVR-E003", "ERROR", "metadata.description is missing or empty", "metadata.description"))
-
-    if isinstance(meta, dict):
-        if not _is_nonempty_str(meta.get("author")):
-            findings.append(_finding("SVR-W001", "WARNING", "metadata.author is missing or empty", "metadata.author"))
-
-        created_at = meta.get("created_at")
-        if not created_at or _parse_date(str(created_at)) is None:
-            findings.append(_finding("SVR-W002", "WARNING", "metadata.created_at is missing or not in YYYY-MM-DD format", "metadata.created_at"))
-
-    return findings
-
-
-def _check_strategy_top(spec: dict[str, Any]) -> list[dict[str, str]]:
-    findings: list[dict[str, str]] = []
-    strategy = spec.get("strategy")
-
-    if not isinstance(strategy, dict):
-        findings.append(_finding("SVR-E004", "ERROR", "Top-level 'strategy' block is missing", "strategy"))
-        return findings  # Cannot continue without the block
-
-    strategy_type = strategy.get("type")
-    if not _is_nonempty_str(strategy_type) or strategy_type not in ALLOWED_STRATEGY_TYPES:
-        allowed = ", ".join(sorted(ALLOWED_STRATEGY_TYPES))
+    # SVR-E005: name
+    name = _get(spec, "metadata", "name")
+    if not _is_nonempty_str(name):
         findings.append(_finding(
             "SVR-E005", "ERROR",
-            f"strategy.type is missing or invalid (got {strategy_type!r}). Allowed: {allowed}",
-            "strategy.type",
+            "metadata.name is missing or empty",
+            "metadata.name",
+        ))
+
+    # SVR-W001: description (missing or < 20 chars)
+    description = _get(spec, "metadata", "description")
+    if not isinstance(meta, dict) or not _is_nonempty_str(description) or len(str(description).strip()) < 20:
+        findings.append(_finding(
+            "SVR-W001", "WARNING",
+            "metadata.description is missing or shorter than 20 characters",
+            "metadata.description",
+        ))
+
+    # SVR-W002: author
+    author = _get(spec, "metadata", "author")
+    if not _is_nonempty_str(author):
+        findings.append(_finding(
+            "SVR-W002", "WARNING",
+            "metadata.author is missing or empty",
+            "metadata.author",
+        ))
+
+    # SVR-W062: version
+    version = _get(spec, "metadata", "version")
+    if not _is_nonempty_str(version):
+        findings.append(_finding(
+            "SVR-W062", "WARNING",
+            "metadata.version is missing or empty",
+            "metadata.version",
         ))
 
     return findings
 
 
-def _check_universe(strategy: dict[str, Any]) -> list[dict[str, str]]:
+def _check_capital(spec: dict[str, Any]) -> list[dict[str, str]]:
+    """Capital section: SVR-E003, E004."""
     findings: list[dict[str, str]] = []
-    universe = strategy.get("universe")
+    capital = spec.get("capital")
 
-    if not isinstance(universe, dict):
-        findings.append(_finding("SVR-W003", "WARNING", "strategy.universe block is missing", "strategy.universe"))
+    if not isinstance(capital, dict):
+        findings.append(_finding(
+            "SVR-E003", "ERROR",
+            "capital section is missing: neither capital.allocation_usd nor capital.allocation_pct is present",
+            "capital",
+        ))
         return findings
 
-    symbols = universe.get("symbols")
-    if not isinstance(symbols, list) or len(symbols) == 0:
-        findings.append(_finding("SVR-E006", "ERROR", "strategy.universe.symbols is missing or empty", "strategy.universe.symbols"))
-    elif len(symbols) == 1:
-        findings.append(_finding("SVR-W020", "WARNING", "strategy.universe.symbols contains only 1 symbol (concentration risk)", "strategy.universe.symbols"))
+    alloc_usd = capital.get("allocation_usd")
+    alloc_pct = capital.get("allocation_pct")
 
-    resolution = universe.get("resolution")
+    if alloc_usd is None and alloc_pct is None:
+        findings.append(_finding(
+            "SVR-E003", "ERROR",
+            "Neither capital.allocation_usd nor capital.allocation_pct is present",
+            "capital",
+        ))
+        return findings
+
+    # Check whichever field is present has a value > 0.
+    value = alloc_usd if alloc_usd is not None else alloc_pct
+    field = "capital.allocation_usd" if alloc_usd is not None else "capital.allocation_pct"
+    try:
+        if float(value) <= 0:
+            findings.append(_finding(
+                "SVR-E004", "ERROR",
+                f"{field} must be > 0 (got {value!r})",
+                field,
+            ))
+    except (TypeError, ValueError):
+        findings.append(_finding(
+            "SVR-E004", "ERROR",
+            f"{field} is not a valid number (got {value!r})",
+            field,
+        ))
+
+    return findings
+
+
+def _check_constraints(spec: dict[str, Any], trading_style: str | None) -> list[dict[str, str]]:
+    """Constraints section (day_trade only): SVR-E011, E012, E013."""
+    findings: list[dict[str, str]] = []
+
+    if trading_style != "day_trade":
+        return findings
+
+    # SVR-E011: max_holding_minutes required for day_trade
+    max_holding = _get(spec, "constraints", "max_holding_minutes")
+    if max_holding is None:
+        findings.append(_finding(
+            "SVR-E011", "ERROR",
+            "constraints.max_holding_minutes is required for day_trade strategies",
+            "constraints.max_holding_minutes",
+        ))
+    else:
+        try:
+            if float(max_holding) > 390:
+                findings.append(_finding(
+                    "SVR-E012", "ERROR",
+                    f"constraints.max_holding_minutes > 390 (got {max_holding!r}); "
+                    "a regular trading session is at most 390 minutes",
+                    "constraints.max_holding_minutes",
+                ))
+        except (TypeError, ValueError):
+            findings.append(_finding(
+                "SVR-E012", "ERROR",
+                f"constraints.max_holding_minutes is not a valid number (got {max_holding!r})",
+                "constraints.max_holding_minutes",
+            ))
+
+    # SVR-E013: close_eod must be true for day_trade
+    close_eod = _get(spec, "constraints", "close_eod")
+    if close_eod is not True:
+        findings.append(_finding(
+            "SVR-E013", "ERROR",
+            "constraints.close_eod must be true for day_trade strategies "
+            f"(got {close_eod!r})",
+            "constraints.close_eod",
+        ))
+
+    return findings
+
+
+def _check_data(spec: dict[str, Any]) -> list[dict[str, str]]:
+    """Data section: SVR-E056/a/b, E057, E058, E059, E060, W050."""
+    findings: list[dict[str, str]] = []
+    data = spec.get("data")
+
+    if not isinstance(data, dict):
+        findings.append(_finding("SVR-E056", "ERROR", "data section is missing: no instruments or universe defined", "data"))
+        findings.append(_finding("SVR-E057", "ERROR", "data.resolution is missing", "data.resolution"))
+        findings.append(_finding(
+            "SVR-E058", "ERROR",
+            "No date range defined: provide data.start_date + data.end_date or data.lookback_years",
+            "data",
+        ))
+        return findings
+
+    # --- SVR-E056: instruments / universe ---
+    instruments = data.get("instruments")
+    universe = data.get("universe")
+    has_valid_instruments = isinstance(instruments, list) and len(instruments) > 0
+
+    if not has_valid_instruments:
+        if isinstance(universe, dict) and universe.get("mode") == "dynamic":
+            # Dynamic universe — validate screener sub-rules.
+            screener_valid = True
+
+            criteria = _get(universe, "screener", "criteria")
+            if criteria not in ALLOWED_SCREENER_CRITERIA:
+                allowed = ", ".join(sorted(ALLOWED_SCREENER_CRITERIA))
+                findings.append(_finding(
+                    "SVR-E056a", "ERROR",
+                    f"data.universe.screener.criteria is missing or invalid "
+                    f"(got {criteria!r}). Allowed: {allowed}",
+                    "data.universe.screener.criteria",
+                ))
+                screener_valid = False
+
+            max_symbols = _get(universe, "screener", "max_symbols")
+            try:
+                if max_symbols is None or float(max_symbols) <= 0:
+                    findings.append(_finding(
+                        "SVR-E056b", "ERROR",
+                        f"data.universe.screener.max_symbols is missing or <= 0 (got {max_symbols!r})",
+                        "data.universe.screener.max_symbols",
+                    ))
+                    screener_valid = False
+            except (TypeError, ValueError):
+                findings.append(_finding(
+                    "SVR-E056b", "ERROR",
+                    f"data.universe.screener.max_symbols is not a valid number (got {max_symbols!r})",
+                    "data.universe.screener.max_symbols",
+                ))
+                screener_valid = False
+
+            if not screener_valid:
+                # Dynamic universe screener is invalid → instruments source is also unsatisfied.
+                findings.append(_finding(
+                    "SVR-E056", "ERROR",
+                    "data.universe dynamic screener is invalid; no valid instruments source defined",
+                    "data",
+                ))
+            # else: screener is valid — SVR-E056 is satisfied by dynamic universe.
+        else:
+            # No valid instruments and no valid dynamic universe.
+            findings.append(_finding(
+                "SVR-E056", "ERROR",
+                "Neither data.instruments (non-empty list) nor a valid data.universe is present",
+                "data",
+            ))
+
+    # --- SVR-E057: resolution ---
+    resolution = data.get("resolution")
     if not _is_nonempty_str(resolution) or resolution not in ALLOWED_RESOLUTIONS:
         allowed = ", ".join(sorted(ALLOWED_RESOLUTIONS))
         findings.append(_finding(
-            "SVR-E007", "ERROR",
-            f"strategy.universe.resolution is missing or invalid (got {resolution!r}). Allowed: {allowed}",
-            "strategy.universe.resolution",
+            "SVR-E057", "ERROR",
+            f"data.resolution is missing or invalid (got {resolution!r}). Allowed: {allowed}",
+            "data.resolution",
+        ))
+
+    # --- SVR-E058 / E059 / E060 / W050: date range ---
+    start_date = _parse_date(data.get("start_date"))
+    end_date = _parse_date(data.get("end_date"))
+    lookback_years = data.get("lookback_years")
+
+    has_dates = start_date is not None and end_date is not None
+    has_lookback = lookback_years is not None
+
+    if not has_dates and not has_lookback:
+        findings.append(_finding(
+            "SVR-E058", "ERROR",
+            "No date range defined: provide data.start_date + data.end_date or data.lookback_years",
+            "data",
+        ))
+    elif has_dates:
+        if start_date >= end_date:
+            findings.append(_finding(
+                "SVR-E060", "ERROR",
+                f"data.start_date ({start_date}) must be strictly before data.end_date ({end_date})",
+                "data.start_date",
+            ))
+        else:
+            years = _years_between(start_date, end_date)
+            if years < _MIN_RANGE_ERROR_YEARS:
+                findings.append(_finding(
+                    "SVR-E059", "ERROR",
+                    f"Date range is only {years:.1f} years; minimum required is {_MIN_RANGE_ERROR_YEARS:.0f} years",
+                    "data",
+                ))
+            elif years < _MIN_RANGE_WARNING_YEARS:
+                findings.append(_finding(
+                    "SVR-W050", "WARNING",
+                    f"Date range is {years:.1f} years; recommend at least "
+                    f"{_MIN_RANGE_WARNING_YEARS:.0f} years for robust backtesting",
+                    "data",
+                ))
+
+    return findings
+
+
+def _check_signals(spec: dict[str, Any]) -> list[dict[str, str]]:
+    """Signals section: SVR-E031, E032, E033, E034, E066, E067, E068, W030."""
+    findings: list[dict[str, str]] = []
+    signals = spec.get("signals")
+
+    if not isinstance(signals, dict):
+        findings.append(_finding("SVR-E031", "ERROR", "signals.entry is missing or not a non-empty list", "signals.entry"))
+        findings.append(_finding("SVR-E033", "ERROR", "signals.exit is missing or not a non-empty list", "signals.exit"))
+        return findings
+
+    # SVR-E031: entry must be a non-empty list
+    entry = signals.get("entry")
+    if not isinstance(entry, list) or len(entry) == 0:
+        findings.append(_finding("SVR-E031", "ERROR", "signals.entry is missing or not a non-empty list", "signals.entry"))
+        entry = []
+
+    # SVR-E032: at least one entry condition must contain a numeric threshold
+    if entry and not any(_NUMERIC_RE.search(str(c)) for c in entry):
+        findings.append(_finding(
+            "SVR-E032", "ERROR",
+            "signals.entry has no condition containing a numeric threshold (at least one digit required)",
+            "signals.entry",
+        ))
+
+    # SVR-E033: exit must be a non-empty list
+    exit_ = signals.get("exit")
+    if not isinstance(exit_, list) or len(exit_) == 0:
+        findings.append(_finding("SVR-E033", "ERROR", "signals.exit is missing or not a non-empty list", "signals.exit"))
+        exit_ = []
+
+    # SVR-W030: at least one exit condition should be time-based
+    if exit_ and not any(
+        any(p.search(str(c)) for p in _TIME_EXIT_PATTERNS) for c in exit_
+    ):
+        findings.append(_finding(
+            "SVR-W030", "WARNING",
+            "signals.exit has no time-based exit condition; consider adding a time, "
+            "minute, hour, bar, duration, hold, or session-based exit",
+            "signals.exit",
+        ))
+
+    # Combine all conditions into one string for pattern checks below.
+    all_conditions = " ".join(str(c) for c in (entry + exit_))
+
+    # SVR-E034: banned vague terms (report first match only)
+    for pattern in _BANNED_TERM_PATTERNS:
+        match = pattern.search(all_conditions)
+        if match:
+            findings.append(_finding(
+                "SVR-E034", "ERROR",
+                f"Signal condition contains banned vague term: {match.group()!r}",
+                "signals",
+            ))
+            break
+
+    # SVR-E066: lookahead bias patterns (report first match only)
+    for pattern in _LOOKAHEAD_PATTERNS:
+        if pattern.search(all_conditions):
+            findings.append(_finding(
+                "SVR-E066", "ERROR",
+                "Signal condition contains a lookahead bias pattern",
+                "signals",
+            ))
+            break
+
+    # SVR-E067: non-deterministic entry patterns (report first match only)
+    for pattern in _NONDETERMINISTIC_PATTERNS:
+        if pattern.search(all_conditions):
+            findings.append(_finding(
+                "SVR-E067", "ERROR",
+                "Signal condition contains a non-deterministic entry pattern",
+                "signals",
+            ))
+            break
+
+    # SVR-E068: unavailable / non-public data source patterns (report first match only)
+    for pattern in _UNAVAILABLE_DATA_PATTERNS:
+        if pattern.search(all_conditions):
+            findings.append(_finding(
+                "SVR-E068", "ERROR",
+                "Signal condition references an unavailable data source",
+                "signals",
+            ))
+            break
+
+    return findings
+
+
+def _check_risk_management(spec: dict[str, Any]) -> list[dict[str, str]]:
+    """Risk management section: SVR-E023, E024, E025, E026, W020, W021."""
+    findings: list[dict[str, str]] = []
+    rm = spec.get("risk_management")
+
+    if not isinstance(rm, dict):
+        findings.append(_finding(
+            "SVR-E023", "ERROR",
+            "risk_management.stop_loss is missing",
+            "risk_management.stop_loss",
+        ))
+        findings.append(_finding(
+            "SVR-E024", "ERROR",
+            "risk_management.position_sizing is missing or empty",
+            "risk_management.position_sizing",
+        ))
+        return findings
+
+    # SVR-E023: stop_loss must be a simple positive number or a dict with
+    #   at least one positive sub-field: pct, atr_multiplier, absolute_usd.
+    stop_loss = rm.get("stop_loss")
+    if stop_loss is None:
+        findings.append(_finding(
+            "SVR-E023", "ERROR",
+            "risk_management.stop_loss is missing",
+            "risk_management.stop_loss",
+        ))
+    elif isinstance(stop_loss, dict):
+        pct = stop_loss.get("pct")
+        atr = stop_loss.get("atr_multiplier")
+        abs_usd = stop_loss.get("absolute_usd")
+        if not (_is_positive_number(pct) or _is_positive_number(atr) or _is_positive_number(abs_usd)):
+            findings.append(_finding(
+                "SVR-E023", "ERROR",
+                "risk_management.stop_loss dict has none of pct, atr_multiplier, "
+                "absolute_usd with a positive value",
+                "risk_management.stop_loss",
+            ))
+    else:
+        try:
+            if float(stop_loss) <= 0:
+                findings.append(_finding(
+                    "SVR-E023", "ERROR",
+                    f"risk_management.stop_loss must be > 0 (got {stop_loss!r})",
+                    "risk_management.stop_loss",
+                ))
+        except (TypeError, ValueError):
+            findings.append(_finding(
+                "SVR-E023", "ERROR",
+                f"risk_management.stop_loss is not a valid number or dict (got {stop_loss!r})",
+                "risk_management.stop_loss",
+            ))
+
+    # SVR-E024: position_sizing must be a non-empty string
+    position_sizing = rm.get("position_sizing")
+    if not _is_nonempty_str(position_sizing):
+        findings.append(_finding(
+            "SVR-E024", "ERROR",
+            "risk_management.position_sizing is missing or empty",
+            "risk_management.position_sizing",
+        ))
+
+    # SVR-E025: leverage > 4
+    leverage = rm.get("leverage")
+    if leverage is not None:
+        try:
+            if float(leverage) > 4:
+                findings.append(_finding(
+                    "SVR-E025", "ERROR",
+                    f"risk_management.leverage > 4 (got {leverage!r}); maximum allowed is 4×",
+                    "risk_management.leverage",
+                ))
+        except (TypeError, ValueError):
+            pass  # Non-numeric leverage is not a leverage-range error; leave for schema linters.
+
+    # SVR-E026: if notes or metadata.description mention "margin" or "futures"
+    #   but leverage is absent, emit an error.
+    notes = spec.get("notes")
+    description = _get(spec, "metadata", "description")
+    search_text = " ".join(filter(None, [
+        str(notes) if isinstance(notes, str) else "",
+        str(description) if isinstance(description, str) else "",
+    ]))
+    if re.search(r"\bmargin\b|\bfutures\b", search_text, re.IGNORECASE) and leverage is None:
+        findings.append(_finding(
+            "SVR-E026", "ERROR",
+            "Spec mentions 'margin' or 'futures' but risk_management.leverage is absent",
+            "risk_management.leverage",
+        ))
+
+    # SVR-W020: max_positions recommended
+    if rm.get("max_positions") is None:
+        findings.append(_finding(
+            "SVR-W020", "WARNING",
+            "risk_management.max_positions is missing; recommend specifying a "
+            "maximum concurrent position count",
+            "risk_management.max_positions",
+        ))
+
+    # SVR-W021: risk_per_trade_pct recommended
+    if rm.get("risk_per_trade_pct") is None:
+        findings.append(_finding(
+            "SVR-W021", "WARNING",
+            "risk_management.risk_per_trade_pct is missing; recommend defining "
+            "risk per trade as a percentage of account equity",
+            "risk_management.risk_per_trade_pct",
         ))
 
     return findings
 
 
-def _has_vague_language(text: str) -> bool:
-    return any(p.search(text) for p in _VAGUE_PATTERNS)
-
-
-def _has_numeric_threshold(text: str) -> bool:
-    return bool(_NUMERIC_RE.search(text))
-
-
-def _check_signals(strategy: dict[str, Any]) -> list[dict[str, str]]:
+def _check_acceptance_criteria(spec: dict[str, Any]) -> list[dict[str, str]]:
+    """Acceptance criteria section: SVR-E021/22, E046/47, E048/49, E050/51, W040."""
     findings: list[dict[str, str]] = []
-    signals = strategy.get("signals")
+    ac = spec.get("acceptance_criteria")
 
-    if not isinstance(signals, dict):
-        findings.append(_finding("SVR-E008", "ERROR", "strategy.signals block is missing", "strategy.signals"))
+    if not isinstance(ac, dict):
+        ac = {}  # Missing entirely — all required fields will trigger below.
+
+    def _check_required_positive(
+        key: str,
+        err_missing: str,
+        err_nonpositive: str,
+        field_path: str,
+    ) -> None:
+        value = ac.get(key)
+        if value is None:
+            findings.append(_finding(
+                err_missing, "ERROR",
+                f"acceptance_criteria.{key} is missing",
+                field_path,
+            ))
+        else:
+            try:
+                if float(value) <= 0:
+                    findings.append(_finding(
+                        err_nonpositive, "ERROR",
+                        f"acceptance_criteria.{key} must be > 0 (got {value!r})",
+                        field_path,
+                    ))
+            except (TypeError, ValueError):
+                findings.append(_finding(
+                    err_nonpositive, "ERROR",
+                    f"acceptance_criteria.{key} is not a valid number (got {value!r})",
+                    field_path,
+                ))
+
+    _check_required_positive(
+        "max_drawdown_pct", "SVR-E021", "SVR-E022",
+        "acceptance_criteria.max_drawdown_pct",
+    )
+    _check_required_positive(
+        "min_sharpe_ratio", "SVR-E046", "SVR-E047",
+        "acceptance_criteria.min_sharpe_ratio",
+    )
+    _check_required_positive(
+        "min_profit_factor", "SVR-E048", "SVR-E049",
+        "acceptance_criteria.min_profit_factor",
+    )
+    _check_required_positive(
+        "min_trades", "SVR-E050", "SVR-E051",
+        "acceptance_criteria.min_trades",
+    )
+
+    # SVR-W040: min_cagr is recommended
+    if ac.get("min_cagr") is None:
+        findings.append(_finding(
+            "SVR-W040", "WARNING",
+            "acceptance_criteria.min_cagr is missing; recommend defining a "
+            "minimum annual return target",
+            "acceptance_criteria.min_cagr",
+        ))
+
+    return findings
+
+
+def _check_assumptions(spec: dict[str, Any], trading_style: str | None) -> list[dict[str, str]]:
+    """Assumptions section: SVR-W010, W011, W051."""
+    findings: list[dict[str, str]] = []
+    assumptions = spec.get("assumptions")
+
+    # SVR-W051: assumptions section entirely absent
+    if assumptions is None:
+        findings.append(_finding(
+            "SVR-W051", "WARNING",
+            "assumptions section is entirely missing; recommend documenting fee "
+            "and slippage assumptions",
+            "assumptions",
+        ))
         return findings
 
-    for direction in ("entry", "exit"):
-        block = signals.get(direction)
-        e_missing = "SVR-E009" if direction == "entry" else "SVR-E010"
-        e_cond = "SVR-E011" if direction == "entry" else "SVR-E012"
-        w_numeric = "SVR-W023" if direction == "entry" else "SVR-W024"
-
-        if not isinstance(block, dict):
-            findings.append(_finding(e_missing, "ERROR", f"strategy.signals.{direction} section is missing", f"strategy.signals.{direction}"))
-            continue
-
-        conditions = block.get("conditions")
-        if not isinstance(conditions, list) or len(conditions) == 0:
-            findings.append(_finding(e_cond, "ERROR", f"strategy.signals.{direction}.conditions is missing or empty", f"strategy.signals.{direction}.conditions"))
-            continue
-
-        vague_found = False
-        has_any_numeric = False
-        for cond in conditions:
-            if not isinstance(cond, str):
-                continue
-            if _has_vague_language(cond):
-                vague_found = True
-            if _has_numeric_threshold(cond):
-                has_any_numeric = True
-
-        if vague_found:
+    if trading_style == "day_trade":
+        # SVR-W010: fees required for day_trade
+        fees = _get(spec, "assumptions", "fees")
+        if fees is None:
             findings.append(_finding(
-                "SVR-E030", "ERROR",
-                f"strategy.signals.{direction}.conditions contains vague, non-quantifiable language. Replace with explicit numeric thresholds.",
-                f"strategy.signals.{direction}.conditions",
+                "SVR-W010", "WARNING",
+                "assumptions.fees is missing for a day_trade strategy; "
+                "transaction fees can significantly affect intraday P&L",
+                "assumptions.fees",
             ))
 
-        if not has_any_numeric:
-            findings.append(_finding(
-                w_numeric, "WARNING",
-                f"strategy.signals.{direction}.conditions has no numeric threshold. Add explicit values (e.g., RSI > 70).",
-                f"strategy.signals.{direction}.conditions",
-            ))
+        # SVR-W011: slippage == 0 is unrealistic for day_trade
+        slippage = _get(spec, "assumptions", "slippage")
+        if slippage is not None:
+            try:
+                if float(slippage) == 0:
+                    findings.append(_finding(
+                        "SVR-W011", "WARNING",
+                        "assumptions.slippage is 0 for a day_trade strategy; "
+                        "zero slippage is unrealistic for intraday trading",
+                        "assumptions.slippage",
+                    ))
+            except (TypeError, ValueError):
+                pass
 
     return findings
 
 
-def _check_risk_management(strategy: dict[str, Any]) -> list[dict[str, str]]:
+def _check_general(spec: dict[str, Any]) -> list[dict[str, str]]:
+    """General spec quality checks: SVR-W061."""
     findings: list[dict[str, str]] = []
-    risk = strategy.get("risk_management")
 
-    if not isinstance(risk, dict):
-        findings.append(_finding("SVR-E013", "ERROR", "strategy.risk_management block is missing", "strategy.risk_management"))
-        # Sub-field checks impossible — add dependent errors and return
-        findings.append(_finding("SVR-E014", "ERROR", "strategy.risk_management.stop_loss is missing (implied by missing block)", "strategy.risk_management.stop_loss"))
-        findings.append(_finding("SVR-E015", "ERROR", "strategy.risk_management.max_position_size is missing (implied by missing block)", "strategy.risk_management.max_position_size"))
-        return findings
+    try:
+        body = yaml.dump(spec, default_flow_style=False)
+    except Exception:
+        body = str(spec)
 
-    # stop_loss
-    stop_loss = risk.get("stop_loss")
-    if stop_loss is None:
-        findings.append(_finding("SVR-E014", "ERROR", "strategy.risk_management.stop_loss is missing", "strategy.risk_management.stop_loss"))
-    else:
-        try:
-            sl_val = float(stop_loss)
-            if sl_val > 0.20:
-                findings.append(_finding("SVR-E027", "ERROR", f"strategy.risk_management.stop_loss={sl_val} exceeds maximum allowed 0.20 (20%)", "strategy.risk_management.stop_loss"))
-            elif sl_val <= 0:
-                findings.append(_finding("SVR-W021", "WARNING", f"strategy.risk_management.stop_loss={sl_val} must be positive", "strategy.risk_management.stop_loss"))
-        except (TypeError, ValueError):
-            findings.append(_finding("SVR-E014", "ERROR", f"strategy.risk_management.stop_loss is not a valid number: {stop_loss!r}", "strategy.risk_management.stop_loss"))
+    if len(body) < 200:
+        findings.append(_finding(
+            "SVR-W061", "WARNING",
+            f"Spec body is only {len(body)} characters; a thorough spec should be "
+            "at least 200 characters",
+            "",
+        ))
 
-    # max_position_size
-    mps = risk.get("max_position_size")
-    if mps is None:
-        findings.append(_finding("SVR-E015", "ERROR", "strategy.risk_management.max_position_size is missing", "strategy.risk_management.max_position_size"))
-    else:
-        try:
-            mps_val = float(mps)
-            if mps_val <= 0 or mps_val > 1.0:
-                findings.append(_finding("SVR-E028", "ERROR", f"strategy.risk_management.max_position_size={mps_val} must be in (0, 1.0]", "strategy.risk_management.max_position_size"))
-        except (TypeError, ValueError):
-            findings.append(_finding("SVR-E015", "ERROR", f"strategy.risk_management.max_position_size is not a valid number: {mps!r}", "strategy.risk_management.max_position_size"))
-
-    # max_leverage (optional, but checked if present)
-    leverage = risk.get("max_leverage")
-    if leverage is not None:
-        try:
-            lev_val = float(leverage)
-            if lev_val > 3.0:
-                findings.append(_finding("SVR-E029", "ERROR", f"strategy.risk_management.max_leverage={lev_val} exceeds maximum allowed 3.0", "strategy.risk_management.max_leverage"))
-            elif lev_val > 1.0:
-                findings.append(_finding("SVR-W026", "WARNING", f"strategy.risk_management.max_leverage={lev_val} > 1.0 amplifies drawdown risk", "strategy.risk_management.max_leverage"))
-        except (TypeError, ValueError):
-            pass  # Non-numeric leverage is caught by schema, not a separate rule
-
-    # max_drawdown (recommended)
-    max_dd = risk.get("max_drawdown")
-    if max_dd is None:
-        findings.append(_finding("SVR-W006", "WARNING", "strategy.risk_management.max_drawdown is missing", "strategy.risk_management.max_drawdown"))
-    else:
-        try:
-            dd_val = float(max_dd)
-            if dd_val > 0.50:
-                findings.append(_finding("SVR-W015", "WARNING", f"strategy.risk_management.max_drawdown={dd_val} > 0.50 suggests insufficient risk control", "strategy.risk_management.max_drawdown"))
-        except (TypeError, ValueError):
-            pass
-
-    # take_profit (recommended)
-    if risk.get("take_profit") is None:
-        findings.append(_finding("SVR-W005", "WARNING", "strategy.risk_management.take_profit is missing", "strategy.risk_management.take_profit"))
-
-    # position_sizing (recommended)
-    if not _is_nonempty_str(risk.get("position_sizing")):
-        findings.append(_finding("SVR-W004", "WARNING", "strategy.risk_management.position_sizing is missing", "strategy.risk_management.position_sizing"))
-
-    return findings
-
-
-def _check_performance_targets(strategy: dict[str, Any]) -> list[dict[str, str]]:
-    findings: list[dict[str, str]] = []
-    pt = strategy.get("performance_targets")
-
-    if not isinstance(pt, dict):
-        findings.append(_finding("SVR-E016", "ERROR", "strategy.performance_targets block is missing", "strategy.performance_targets"))
-        findings.append(_finding("SVR-E017", "ERROR", "strategy.performance_targets.sharpe_ratio_min is missing (implied by missing block)", "strategy.performance_targets.sharpe_ratio_min"))
-        findings.append(_finding("SVR-E018", "ERROR", "strategy.performance_targets.max_drawdown_threshold is missing (implied by missing block)", "strategy.performance_targets.max_drawdown_threshold"))
-        return findings
-
-    # sharpe_ratio_min
-    sharpe = pt.get("sharpe_ratio_min")
-    if sharpe is None:
-        findings.append(_finding("SVR-E017", "ERROR", "strategy.performance_targets.sharpe_ratio_min is missing", "strategy.performance_targets.sharpe_ratio_min"))
-    else:
-        try:
-            sh_val = float(sharpe)
-            if sh_val < 1.0:
-                findings.append(_finding("SVR-W012", "WARNING", f"strategy.performance_targets.sharpe_ratio_min={sh_val} is below the industry standard of 1.0", "strategy.performance_targets.sharpe_ratio_min"))
-            if sh_val > 5.0:
-                findings.append(_finding("SVR-W014", "WARNING", f"strategy.performance_targets.sharpe_ratio_min={sh_val} > 5.0 is likely curve-fitted", "strategy.performance_targets.sharpe_ratio_min"))
-        except (TypeError, ValueError):
-            findings.append(_finding("SVR-E017", "ERROR", f"strategy.performance_targets.sharpe_ratio_min is not a valid number: {sharpe!r}", "strategy.performance_targets.sharpe_ratio_min"))
-
-    # max_drawdown_threshold
-    mdt = pt.get("max_drawdown_threshold")
-    if mdt is None:
-        findings.append(_finding("SVR-E018", "ERROR", "strategy.performance_targets.max_drawdown_threshold is missing", "strategy.performance_targets.max_drawdown_threshold"))
-    else:
-        try:
-            mdt_val = float(mdt)
-            if mdt_val > 0.30:
-                findings.append(_finding("SVR-W016", "WARNING", f"strategy.performance_targets.max_drawdown_threshold={mdt_val} > 0.30; recommend ≤ 0.20", "strategy.performance_targets.max_drawdown_threshold"))
-        except (TypeError, ValueError):
-            findings.append(_finding("SVR-E018", "ERROR", f"strategy.performance_targets.max_drawdown_threshold is not a valid number: {mdt!r}", "strategy.performance_targets.max_drawdown_threshold"))
-
-    # win_rate_min (recommended)
-    win_rate = pt.get("win_rate_min")
-    if win_rate is None:
-        findings.append(_finding("SVR-W007", "WARNING", "strategy.performance_targets.win_rate_min is missing", "strategy.performance_targets.win_rate_min"))
-    else:
-        try:
-            wr_val = float(win_rate)
-            if wr_val < 0.50:
-                findings.append(_finding("SVR-W013", "WARNING", f"strategy.performance_targets.win_rate_min={wr_val} < 0.50; suboptimal without high reward-to-risk", "strategy.performance_targets.win_rate_min"))
-        except (TypeError, ValueError):
-            pass
-
-    return findings
-
-
-def _check_backtesting(strategy: dict[str, Any]) -> list[dict[str, str]]:
-    findings: list[dict[str, str]] = []
-    bt = strategy.get("backtesting")
-
-    if not isinstance(bt, dict):
-        findings.append(_finding("SVR-E019", "ERROR", "strategy.backtesting block is missing", "strategy.backtesting"))
-        findings.append(_finding("SVR-E020", "ERROR", "strategy.backtesting.start_date is missing (implied by missing block)", "strategy.backtesting.start_date"))
-        findings.append(_finding("SVR-E021", "ERROR", "strategy.backtesting.end_date is missing (implied by missing block)", "strategy.backtesting.end_date"))
-        findings.append(_finding("SVR-E022", "ERROR", "strategy.backtesting.initial_capital is missing (implied by missing block)", "strategy.backtesting.initial_capital"))
-        findings.append(_finding("SVR-E023", "ERROR", "strategy.backtesting.min_trades is missing (implied by missing block)", "strategy.backtesting.min_trades"))
-        return findings
-
-    # start_date
-    start_raw = bt.get("start_date")
-    if start_raw is None:
-        findings.append(_finding("SVR-E020", "ERROR", "strategy.backtesting.start_date is missing", "strategy.backtesting.start_date"))
-        start_date = None
-    else:
-        start_date = _parse_date(str(start_raw))
-        if start_date is None:
-            findings.append(_finding("SVR-E024", "ERROR", f"strategy.backtesting.start_date={start_raw!r} is not in YYYY-MM-DD format", "strategy.backtesting.start_date"))
-
-    # end_date
-    end_raw = bt.get("end_date")
-    if end_raw is None:
-        findings.append(_finding("SVR-E021", "ERROR", "strategy.backtesting.end_date is missing", "strategy.backtesting.end_date"))
-        end_date = None
-    else:
-        end_date = _parse_date(str(end_raw))
-        if end_date is None:
-            findings.append(_finding("SVR-E025", "ERROR", f"strategy.backtesting.end_date={end_raw!r} is not in YYYY-MM-DD format", "strategy.backtesting.end_date"))
-
-    # Date order
-    if start_date is not None and end_date is not None:
-        if start_date >= end_date:
-            findings.append(_finding("SVR-E026", "ERROR", f"strategy.backtesting.start_date ({start_date}) must be before end_date ({end_date})", "strategy.backtesting"))
-
-        today = date.today()
-        if end_date > today:
-            findings.append(_finding("SVR-W018", "WARNING", f"strategy.backtesting.end_date ({end_date}) is in the future (look-ahead bias risk)", "strategy.backtesting.end_date"))
-
-        days = (end_date - start_date).days
-        if days < 730:
-            findings.append(_finding("SVR-W019", "WARNING", f"Backtesting period is {days} days (< 2 years). Use ≥ 2 years to capture multiple market conditions.", "strategy.backtesting"))
-
-    # initial_capital
-    capital = bt.get("initial_capital")
-    if capital is None:
-        findings.append(_finding("SVR-E022", "ERROR", "strategy.backtesting.initial_capital is missing", "strategy.backtesting.initial_capital"))
-    else:
-        try:
-            cap_val = float(capital)
-            if cap_val <= 0:
-                findings.append(_finding("SVR-E022", "ERROR", f"strategy.backtesting.initial_capital={cap_val} must be > 0", "strategy.backtesting.initial_capital"))
-            elif cap_val < 10000:
-                findings.append(_finding("SVR-W017", "WARNING", f"strategy.backtesting.initial_capital={cap_val} < $10,000 may produce unrealistic fill assumptions", "strategy.backtesting.initial_capital"))
-        except (TypeError, ValueError):
-            findings.append(_finding("SVR-E022", "ERROR", f"strategy.backtesting.initial_capital is not a valid number: {capital!r}", "strategy.backtesting.initial_capital"))
-
-    # min_trades
-    min_trades = bt.get("min_trades")
-    if min_trades is None:
-        findings.append(_finding("SVR-E023", "ERROR", "strategy.backtesting.min_trades is missing", "strategy.backtesting.min_trades"))
-    else:
-        try:
-            mt_val = int(min_trades)
-            if mt_val < 100:
-                findings.append(_finding("SVR-E023", "ERROR", f"strategy.backtesting.min_trades={mt_val} is below minimum of 100", "strategy.backtesting.min_trades"))
-            elif mt_val < 1000:
-                findings.append(_finding("SVR-W011", "WARNING", f"strategy.backtesting.min_trades={mt_val} < 1000; consider ≥ 1000 for high statistical confidence", "strategy.backtesting.min_trades"))
-        except (TypeError, ValueError):
-            findings.append(_finding("SVR-E023", "ERROR", f"strategy.backtesting.min_trades is not a valid integer: {min_trades!r}", "strategy.backtesting.min_trades"))
-
-    # benchmark (recommended)
-    if not _is_nonempty_str(bt.get("benchmark")):
-        findings.append(_finding("SVR-W008", "WARNING", "strategy.backtesting.benchmark is missing; add a benchmark (e.g., SPY) for relative performance comparison", "strategy.backtesting.benchmark"))
-
-    return findings
-
-
-def _check_data_requirements(strategy: dict[str, Any]) -> list[dict[str, str]]:
-    findings: list[dict[str, str]] = []
-    dr = strategy.get("data_requirements")
-
-    if not isinstance(dr, dict):
-        findings.append(_finding("SVR-W009", "WARNING", "strategy.data_requirements block is missing", "strategy.data_requirements"))
-        return findings
-
-    indicators = dr.get("indicators")
-    if not isinstance(indicators, list) or len(indicators) == 0:
-        findings.append(_finding("SVR-W010", "WARNING", "strategy.data_requirements.indicators is missing or empty; list technical indicators for reproducibility", "strategy.data_requirements.indicators"))
-
-    if dr.get("min_history_days") is None:
-        findings.append(_finding("SVR-W022", "WARNING", "strategy.data_requirements.min_history_days is missing; specify minimum data history for indicator warm-up", "strategy.data_requirements.min_history_days"))
-
-    return findings
-
-
-def _check_market_making_resolution(strategy: dict[str, Any]) -> list[dict[str, str]]:
-    """SVR-W025: market_making type requires sub-minute resolution."""
-    findings: list[dict[str, str]] = []
-    if strategy.get("type") == "market_making":
-        resolution = _get(strategy, "universe", "resolution")
-        if resolution in ("daily", "weekly", "hour"):
-            findings.append(_finding(
-                "SVR-W025", "WARNING",
-                f"strategy.type=market_making typically requires sub-minute resolution, but universe.resolution={resolution!r}",
-                "strategy.universe.resolution",
-            ))
     return findings
 
 
 # ---------------------------------------------------------------------------
-# Main validation entry-point
+# Sort findings
+# ---------------------------------------------------------------------------
+
+
+def _sort_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Sort findings: ERRORs before WARNINGs, then alphabetically by code within each group."""
+    severity_order = {"ERROR": 0, "WARNING": 1}
+    return sorted(findings, key=lambda f: (severity_order.get(f["severity"], 2), f["code"]))
+
+
+# ---------------------------------------------------------------------------
+# Public API
 # ---------------------------------------------------------------------------
 
 
 def validate_spec(spec: dict[str, Any]) -> list[dict[str, str]]:
-    """Run all 56 SVR rules against a parsed spec dict.
+    """Validate a spec dict against all SVR rules.
 
-    Returns a list of finding dicts sorted by severity (ERRORs first) then code.
+    Args:
+        spec: The parsed YAML spec as a Python dict.
+
+    Returns:
+        A sorted list of finding dicts.  An empty list means fully valid.
+        Each finding has keys: ``code``, ``severity``, ``message``, ``field``.
     """
+    if not isinstance(spec, dict):
+        return [_finding("SVR-E000", "ERROR", "Spec root is not a YAML mapping (dict)", "")]
+
+    trading_style: str | None = _get(spec, "metadata", "trading_style")
+
     findings: list[dict[str, str]] = []
-
     findings.extend(_check_metadata(spec))
-
-    # Top-level strategy check — if missing, stop immediately
-    top_findings = _check_strategy_top(spec)
-    findings.extend(top_findings)
-    strategy = spec.get("strategy")
-    if not isinstance(strategy, dict):
-        return _sort_findings(findings)
-
-    findings.extend(_check_universe(strategy))
-    findings.extend(_check_signals(strategy))
-    findings.extend(_check_risk_management(strategy))
-    findings.extend(_check_performance_targets(strategy))
-    findings.extend(_check_backtesting(strategy))
-    findings.extend(_check_data_requirements(strategy))
-    findings.extend(_check_market_making_resolution(strategy))
-
+    findings.extend(_check_capital(spec))
+    findings.extend(_check_constraints(spec, trading_style))
+    findings.extend(_check_data(spec))
+    findings.extend(_check_signals(spec))
+    findings.extend(_check_risk_management(spec))
+    findings.extend(_check_acceptance_criteria(spec))
+    findings.extend(_check_assumptions(spec, trading_style))
+    findings.extend(_check_general(spec))
     return _sort_findings(findings)
 
 
-def _sort_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:
-    order = {"ERROR": 0, "WARNING": 1}
-    return sorted(findings, key=lambda f: (order.get(f["severity"], 2), f["code"]))
-
-
-# ---------------------------------------------------------------------------
-# Output helpers
-# ---------------------------------------------------------------------------
-
-
 def build_summary(spec_path: str, findings: list[dict[str, str]]) -> dict[str, Any]:
+    """Build the JSON-serialisable output summary.
+
+    Args:
+        spec_path: Path to the validated spec file (used as a label only).
+        findings:  List of finding dicts returned by :func:`validate_spec`.
+
+    Returns:
+        Summary dict with keys: spec_file, valid, result, error_count,
+        warning_count, errors, warnings, findings.
+    """
     errors = [f for f in findings if f["severity"] == "ERROR"]
     warnings = [f for f in findings if f["severity"] == "WARNING"]
     return {
         "spec_file": spec_path,
-        # FIXED: added valid/errors/warnings keys alongside existing fields for CLI consumers
         "valid": len(errors) == 0,
-        "errors": [f["message"] for f in errors],
-        "warnings": [f["message"] for f in warnings],
-        "result": "FAIL" if errors else "PASS",
+        "result": "PASS" if len(errors) == 0 else "FAIL",
         "error_count": len(errors),
         "warning_count": len(warnings),
+        "errors": [f["message"] for f in errors],
+        "warnings": [f["message"] for f in warnings],
         "findings": findings,
     }
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-
 def main(argv: list[str] | None = None) -> int:
-    args = argv if argv is not None else sys.argv[1:]
+    """CLI entry point.
 
-    # FIXED: parse --output flag alongside --spec so consumers can write JSON to a file
-    spec_path: str | None = None
-    output_path: str | None = None
-    positional: list[str] = []
-    i = 0
-    while i < len(args):
-        if args[i] == "--spec" and i + 1 < len(args):
-            spec_path = args[i + 1]
-            i += 2
-        elif args[i] == "--output" and i + 1 < len(args):
-            output_path = args[i + 1]
-            i += 2
-        else:
-            positional.append(args[i])
-            i += 1
+    Usage:
+        spec_validator.py --spec <path> [--output <path>]
+        spec_validator.py <path>
 
-    if spec_path is None:
-        if len(positional) == 1:
-            spec_path = positional[0]
-        else:
-            print(
-                json.dumps({"error": "Usage: spec_validator.py --spec <path/to/spec.yaml> [--output <path>]"}),
-                file=sys.stderr,
-            )
-            return 2
+    Returns:
+        0 on no errors, 1 on one or more ERROR findings, 2 on parse/file failure.
+    """
+    parser = argparse.ArgumentParser(
+        description="Validate a trading strategy YAML spec against SVR rules.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--spec",
+        metavar="PATH",
+        help="Path to the YAML spec file to validate.",
+    )
+    parser.add_argument(
+        "--output",
+        metavar="PATH",
+        help="Optional path to write the JSON summary output.",
+    )
+    parser.add_argument(
+        "positional",
+        nargs="?",
+        metavar="PATH",
+        help="Path to the YAML spec file (alternative to --spec).",
+    )
+    args = parser.parse_args(argv)
 
-    if not os.path.isfile(spec_path):
+    spec_path = args.spec or args.positional
+    if not spec_path:
         print(
-            json.dumps({"error": f"File not found: {spec_path}"}),
+            json.dumps({"error": "No spec file provided. Use --spec <path> or pass path as positional argument."}),
             file=sys.stderr,
         )
         return 2
 
-    with open(spec_path, "r", encoding="utf-8") as fh:
-        # Let yaml.YAMLError propagate loudly so problems are immediately visible
-        spec = yaml.safe_load(fh)
+    if not os.path.isfile(spec_path):
+        print(json.dumps({"error": f"File not found: {spec_path}"}), file=sys.stderr)
+        return 2
 
-    if not isinstance(spec, dict):
-        print(
-            json.dumps({"error": f"YAML file did not parse to a mapping: {spec_path}"}),
-            file=sys.stderr,
-        )
+    try:
+        with open(spec_path, "r", encoding="utf-8") as fh:
+            spec = yaml.safe_load(fh)
+    except yaml.YAMLError as exc:
+        print(json.dumps({"error": f"YAML parse error: {exc}"}), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(json.dumps({"error": f"File read error: {exc}"}), file=sys.stderr)
         return 2
 
     findings = validate_spec(spec)
     summary = build_summary(spec_path, findings)
-    json_output = json.dumps(summary, indent=2)
-    if output_path:
-        with open(output_path, "w", encoding="utf-8") as out_fh:
-            out_fh.write(json_output)
-    else:
-        print(json_output)
+    output_json = json.dumps(summary, indent=2)
 
-    return 1 if summary["result"] == "FAIL" else 0
+    print(output_json)
+
+    if args.output:
+        try:
+            with open(args.output, "w", encoding="utf-8") as fh:
+                fh.write(output_json)
+                fh.write("\n")
+        except OSError as exc:
+            print(json.dumps({"error": f"Failed to write output: {exc}"}), file=sys.stderr)
+            return 2
+
+    return 1 if summary["error_count"] > 0 else 0
 
 
 if __name__ == "__main__":
