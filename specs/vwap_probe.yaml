@@ -1,0 +1,66 @@
+# vwap_probe.yaml
+# PURPOSE: Minimal pipeline probe — NOT the production VWAP strategy.
+# Used to validate Aider build quality and QC backtest loop before
+# committing the full vwap-mean-reversion-mes-tqqq spec.
+# Once pipeline E2E is confirmed healthy, this spec is superseded.
+
+metadata:
+  name: "VWAP Probe"
+  trading_style: day_trade
+  version: "1.0.0"
+  author: "Infinity Lab"
+  created_at: "2026-03-05"
+  description: >-
+    Minimal VWAP mean-reversion probe for E2E pipeline validation.
+    Fades 2-sigma VWAP deviations on MES futures with volume
+    confirmation. Single-mode, ATR stop, 60-minute max hold.
+
+capital:
+  allocation_usd: 25000
+
+constraints:
+  max_holding_minutes: 60
+  close_eod: true
+
+data:
+  instruments:
+    - MES
+  resolution: minute
+  start_date: "2022-01-01"
+  end_date: "2025-12-31"
+
+signals:
+  entry:
+    - "Close < VWAP - (2 * ATR(14)) AND Volume > 1.5 * Volume_MA(20) AND time between 09:45 and 15:30"
+  exit:
+    - "Close >= VWAP OR time held > 60 minutes OR stop_loss hit"
+
+risk_management:
+  stop_loss:
+    atr_multiplier: 2.0
+  position_sizing: fixed_dollar
+  leverage: 1.0
+  max_positions: 1
+  risk_per_trade_pct: 1.0
+
+acceptance_criteria:
+  max_drawdown_pct: 15.0
+  min_sharpe_ratio: 1.0
+  min_profit_factor: 1.3
+  min_trades: 200
+  min_cagr: 15.0
+
+assumptions:
+  fees: 0.001
+  slippage: 0.0005
+
+notes: |
+  Pipeline probe only. Intentionally simple — one entry condition,
+  one exit condition, no regime modes.
+  Success criteria for this probe run:
+    1. spec_validator exits 0 (no SVR errors)
+    2. strategy_reviewer returns PASS or WARN (not BLOCK)
+    3. aider_builder produces a non-empty strategies/vwap_probe.py
+    4. pre_commit_gates passes or surfaces clear fixable errors
+    5. qc_upload_eval runs (stub or real) without crash
+  If all 5 pass -> proceed to full vwap-mean-reversion-mes-tqqq.yaml.
