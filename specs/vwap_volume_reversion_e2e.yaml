@@ -1,0 +1,346 @@
+# VWAP Volume-Confirmed Mean Reversion - E2E Test Strategy
+
+name: VWAP Volume Reversion E2E
+version: 1.0.0
+date_created: 2026-03-04
+author: Infinity Lab
+purpose: |
+  End-to-end pipeline test with real production value.
+  Tests Aider's ability to implement a VWAP-based mean reversion strategy with:
+  - Statistical deviation detection (3-sigma)
+  - Volume profile confirmation
+  - Regime filtering (VIX)
+  - Data availability validation
+  
+  Based on MIA2 VWAP failure learnings:
+  - Data checks BEFORE logic (MIA2's $20 lesson)
+  - Use QC built-in VWAP (not manual calculation)
+  - Volume confirmation mandatory (MIA2's missing piece)
+  - SPY first (proven data), scale later
+  
+  Real-world value:
+  - Institutional flow detection via volume
+  - Statistical mean reversion edge
+  - Scalable to multi-instrument deployment
+
+strategy:
+  name: VWAP Volume Reversion E2E
+  description: |
+    Intraday mean reversion strategy that identifies extreme deviations from VWAP
+    (3-sigma) and enters when institutional volume confirms the reversal.
+    
+    Core edge: Price extremes away from VWAP create mean reversion opportunities,
+    but only when volume suggests institutional participation (1.5x average).
+    
+    Position sizing based on volatility (ATR), exits on VWAP reversion or
+    time-based stop (5 minutes max hold).
+  
+  style: mean_reversion_scalper
+  timeframe: 1min
+  max_holding_period: 5 minutes
+  
+  instruments:
+    - symbol: SPY
+      asset_class: equity
+      data_resolution: minute
+      reason: |
+        Proven reliable data in QC (validated from MIA2 testing).
+        Most liquid ETF, tight spreads, institutional flow visibility.
+  
+  data_requirements:
+    primary:
+      - symbol: SPY
+        resolution: minute
+        history_bars: 390  # Full trading day for VWAP
+    
+    auxiliary:
+      - symbol: VIX
+        resolution: minute
+        history_bars: 20
+        purpose: Regime filtering
+    
+    validation:
+      description: |
+        CRITICAL: Validate data availability in Initialize() before any logic.
+        MIA2 lesson: $20 spent debugging when data was missing.
+      checks:
+        - SPY minute bars available for current day
+        - VIX data available
+        - Sufficient history (390 bars minimum)
+      on_failure: Log error and halt (do not attempt trades)
+  
+  indicators:
+    vwap:
+      name: VWAP
+      implementation: |
+        Use QC's built-in VWAP indicator (Self.VWAP()).
+        DO NOT calculate manually (Memory MCP lesson from MIA2).
+      reset_period: daily
+      lookback: 390 bars (full trading day)
+    
+    volume_ma:
+      name: Volume Moving Average
+      type: simple_moving_average
+      period: 20
+      applied_to: volume
+      purpose: Detect abnormal volume (institutional participation)
+    
+    atr:
+      name: Average True Range
+      period: 14
+      purpose: Volatility-based position sizing and stop distance
+    
+    vix:
+      name: VIX
+      purpose: Regime filter (avoid high VIX > 30 environments)
+      threshold: 30
+  
+  entry_conditions:
+    long:
+      description: Price oversold, institutional volume confirms reversal
+      rules:
+        - condition: price_below_vwap
+          details: Close < VWAP - (3 * VWAP_std_dev)
+          reason: 3-sigma deviation signals extreme oversold
+        
+        - condition: volume_confirmation
+          details: Current bar volume > 1.5 * Volume_MA(20)
+          reason: |
+            Institutional participation suggests reversal strength.
+            MIA2 lesson: Volume confirmation was critical missing piece.
+        
+        - condition: regime_filter
+          details: VIX < 30
+          reason: Avoid mean reversion in high-volatility regimes
+        
+        - condition: time_filter
+          details: Market hours 9:45 AM - 3:45 PM ET
+          reason: Avoid open/close volatility and low liquidity
+    
+    short:
+      description: Price overbought, institutional volume confirms reversal
+      rules:
+        - condition: price_above_vwap
+          details: Close > VWAP + (3 * VWAP_std_dev)
+          reason: 3-sigma deviation signals extreme overbought
+        
+        - condition: volume_confirmation
+          details: Current bar volume > 1.5 * Volume_MA(20)
+          reason: Institutional participation suggests reversal strength
+        
+        - condition: regime_filter
+          details: VIX < 30
+          reason: Avoid mean reversion in high-volatility regimes
+        
+        - condition: time_filter
+          details: Market hours 9:45 AM - 3:45 PM ET
+          reason: Avoid open/close volatility
+  
+  exit_conditions:
+    profit_target:
+      description: Exit when price reverts to VWAP
+      long: Close >= VWAP
+      short: Close <= VWAP
+      reason: Mean reversion complete
+    
+    stop_loss:
+      type: volatility_based
+      distance: 2 * ATR(14)
+      reason: Wider stops for volatile periods, tighter when calm
+    
+    time_based:
+      max_hold: 5 minutes
+      reason: |
+        Scalper strategy, avoid overnight risk.
+        MIA2 design: 1-5 minute holds typical.
+    
+    regime_exit:
+      condition: VIX spikes above 30 mid-trade
+      action: Exit all positions immediately
+      reason: Regime change invalidates mean reversion thesis
+  
+  position_sizing:
+    method: volatility_based
+    base_risk_per_trade: 1.5%
+    calculation: |
+      Position_size = (Account_equity * 0.015) / (2 * ATR(14))
+      
+      Lower risk than typical (1.5% vs 2%) due to scalper frequency.
+      ATR-based sizing adjusts for current volatility.
+    
+    max_positions: 1
+    reason: E2E test focuses on signal quality, not portfolio construction
+  
+  risk_management:
+    max_daily_loss: 6%
+    max_consecutive_losses: 3
+    daily_max_trades: 20
+    
+    actions:
+      on_daily_loss_exceeded: Halt trading for the day
+      on_consecutive_losses: Reduce position size by 50% for next trade
+      on_max_trades_reached: Stop new entries, manage existing only
+  
+  performance_targets:
+    sharpe_ratio_min: 1.2
+    max_drawdown_threshold: 0.12  # 12%
+    win_rate_min: 0.55  # 55%
+    profit_factor_min: 1.5
+    avg_trade_duration_max: 10 minutes
+    
+    reasoning: |
+      Sharpe > 1.2: Strong risk-adjusted returns for intraday strategy
+      DD < 12%: Acceptable for mean reversion (typically 10-15%)
+      Win rate > 55%: Mean reversion edge should win more than lose
+      PF > 1.5: Winners significantly larger than losers
+      Duration < 10 min: Scalper should exit quickly
+
+backtest:
+  periods:
+    - name: Trend Up
+      start: 2021-01-04
+      end: 2021-06-30
+      expected: Small losses (trend opposes mean reversion)
+    
+    - name: Trend Down
+      start: 2022-01-03
+      end: 2022-06-30
+      expected: Small losses (trend opposes mean reversion)
+    
+    - name: Mean Reversion Primary
+      start: 2023-01-03
+      end: 2023-06-30
+      expected: |
+        BEST performance. Choppy/ranging regime ideal for mean reversion.
+        Should see Sharpe > 1.5, win rate > 60%.
+    
+    - name: Sideways Stable
+      start: 2023-07-03
+      end: 2023-09-29
+      expected: Moderate gains, lower volatility
+    
+    - name: Sideways Choppy
+      start: 2023-10-02
+      end: 2023-12-29
+      expected: Good gains, more trade opportunities
+    
+    - name: Volatile Breakout
+      start: 2024-01-02
+      end: 2024-03-28
+      expected: Mixed, VIX filter should protect
+    
+    - name: Recent
+      start: 2024-09-03
+      end: 2024-12-31
+      expected: Validation on latest data
+  
+  acceptance_criteria:
+    minimum_passing_periods: 5
+    reason: |
+      Mean reversion struggles in strong trends (periods 1-2).
+      Should excel in choppy/ranging markets (periods 3-5).
+      7 periods total, need 5 passing = 71% success rate.
+  
+  data_validation:
+    critical_checks:
+      - SPY minute data available for all test periods
+      - No gaps > 10 consecutive bars
+      - VIX data available for regime filter
+    
+    on_data_issues:
+      action: HALT and log error
+      reason: |
+        MIA2 lesson: $20 spent debugging when root cause was missing data.
+        Fail fast on data issues, don't waste iterations on logic.
+
+iteration_strategy:
+  max_iterations: 20
+  convergence_target:
+    sharpe_ratio: 1.2
+    passing_periods: 5
+  
+  phase_1_baseline:
+    iterations: 1-5
+    goal: |
+      Get ANY trades executing successfully.
+      MIA2 blocker: 0 trades for 50 iterations.
+    success: At least 1 trade per test period
+  
+  phase_2_signal_quality:
+    iterations: 6-12
+    goal: Optimize entry conditions for higher win rate
+    focus:
+      - VWAP deviation threshold (3-sigma starting point)
+      - Volume confirmation level (1.5x starting point)
+      - VIX filter threshold (30 starting point)
+  
+  phase_3_risk_optimization:
+    iterations: 13-20
+    goal: Optimize exits and position sizing
+    focus:
+      - ATR multiplier for stops (2.0x starting point)
+      - Time-based exit (5 min starting point)
+      - Position size (1.5% risk starting point)
+  
+  early_termination:
+    condition: All targets met before iteration 20
+    action: Stop and save final strategy
+    reason: Avoid overfitting, preserve generalization
+
+production_deployment:
+  prerequisites:
+    - All 7 backtest periods completed
+    - Minimum 5 periods passing
+    - Sharpe > 1.2 overall
+    - Max DD < 12%
+    - Code passes pre-commit quality gates
+    - Human review approved
+  
+  live_trading_plan:
+    initial_capital: $10,000 (paper trading)
+    live_validation_period: 2 weeks
+    scale_up_plan:
+      - Week 1-2: $10K paper
+      - Week 3-4: $25K paper
+      - Week 5+: Live with $50K (if paper Sharpe > 1.0)
+  
+  monitoring:
+    key_metrics:
+      - Trades per day (expect 5-15)
+      - Live Sharpe vs backtest
+      - Slippage (monitor for degradation)
+      - VIX regime changes
+    
+    alerts:
+      - Daily loss > 4% (approaching 6% limit)
+      - Zero trades for 3 consecutive days (signal issue?)
+      - Live Sharpe < 0.5 for 1 week (backtest disconnect)
+
+e2e_test_objectives:
+  primary:
+    - Validate full ACB pipeline (spec → strategy → backtest → review)
+    - Test Aider's multi-indicator coordination capability
+    - Verify QC MCP integration (MCP-based backtesting)
+    - Confirm iteration convergence within 20 attempts
+  
+  secondary:
+    - Encode MIA2 learnings (data checks, volume confirmation)
+    - Demonstrate production-ready strategy output
+    - Prove Memory MCP value (avoid manual VWAP calculation)
+    - Test Linear MCP logging (external memory)
+  
+  success_definition:
+    - Strategy builds without human intervention
+    - Passes 5/7 regime tests
+    - Meets performance targets (Sharpe > 1.2, DD < 12%)
+    - Completes within 20 iterations
+    - Cost < $5 per build (free models + paid escalation)
+    - Code quality gates pass
+    - Human reviewer approves for paper trading
+
+references:
+  - MIA2 case study: docs/case-studies/claude-mia2-vwap-failure.md (private repo)
+  - Architecture: ARCHITECTURE_v2.8.1 (Complete MCP Stack)
+  - Linear issue: UNI-50 (CONTEXT_SEED)
+  - Validated data: SPY proven reliable in MIA2 testing
+  - QC VWAP docs: https://www.quantconnect.com/docs/v2/writing-algorithms/indicators/supported-indicators/volume-weighted-average-price
