@@ -151,12 +151,128 @@ jobs:
 
       - name: Validate spec
         id: validate
+        continue-on-error: true  # Don't halt pipeline; downstream steps handle the failure
         run: |
-          python scripts/spec_validator.py --spec "${{ matrix.spec_file }}"
+          python scripts/spec_validator.py \
+            --spec "${{ matrix.spec_file }}" \
+            --output /tmp/validation_output.json
+
+      - name: Format validation results to Step Summary
+        id: format-validation
+        if: always()
+        run: |
+          python - <<'PYEOF'
+          import json
+          import os
+
+          # Read validation output written by spec_validator.py
+          try:
+              with open("/tmp/validation_output.json", encoding="utf-8") as f:
+                  result = json.load(f)
+          except FileNotFoundError:
+              print("Validation output not found, skipping summary")
+              exit(0)
+
+          # Write human-readable table to the GitHub Step Summary
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as s:
+              if result["error_count"] > 0:
+                  s.write("## ❌ Spec Validation Failed\n\n")
+                  s.write(f"**Spec**: `{result['spec_file']}`\n\n")
+                  s.write(f"**Errors**: {result['error_count']}\n\n")
+                  s.write("| Code | Field | Message |\n")
+                  s.write("|------|-------|---------|\n")
+                  for finding in result.get("findings", []):
+                      if finding["severity"] == "ERROR":
+                          s.write(f"| `{finding['code']}` | `{finding['field']}` | {finding['message']} |\n")
+              else:
+                  s.write("## ✅ Spec Validation Passed\n\n")
+                  s.write(f"**Spec**: `{result['spec_file']}`\n\n")
+
+              # Always surface warnings when present
+              if result["warning_count"] > 0:
+                  s.write(f"\n### ⚠️ Warnings ({result['warning_count']})\n\n")
+                  for finding in result.get("findings", []):
+                      if finding["severity"] == "WARNING":
+                          s.write(f"- **{finding['code']}** (`{finding['field']}`): {finding['message']}\n")
+          PYEOF
+
+      - name: Notify Slack on validation failure
+        id: notify-validation-failure
+        if: steps.validate.outcome == 'failure' && steps.validate-secrets.outputs.secrets_ok == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ACK_CHANNEL_ID: ${{ secrets.SLACK_ACK_CHANNEL_ID }}
+        run: |
+          python - <<'PYEOF'
+          import json
+          import os
+          import requests
+
+          # Read validation output for error details
+          try:
+              with open("/tmp/validation_output.json", encoding="utf-8") as f:
+                  result = json.load(f)
+              error_summary = f"{result['error_count']} errors"
+              # Show top 3 errors as bullet points in the Slack message
+              errors_text = "\n".join([
+                  f"• {f['code']}: {f['message']}"
+                  for f in result.get("findings", [])[:3]
+                  if f["severity"] == "ERROR"
+              ])
+          except Exception:
+              error_summary = "Unknown errors"
+              errors_text = "Could not load validation output"
+
+          spec_file = "${{ matrix.spec_file }}"
+          run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Build Slack Block Kit message with header, fields, error list, and CTA button
+          message = {
+              "channel": os.environ["SLACK_ACK_CHANNEL_ID"],
+              "text": "❌ ACB Pipeline: Spec validation failed",
+              "blocks": [
+                  {
+                      "type": "header",
+                      "text": {"type": "plain_text", "text": "❌ Spec Validation Failed"},
+                  },
+                  {
+                      "type": "section",
+                      "fields": [
+                          {"type": "mrkdwn", "text": f"*Spec:*\n`{spec_file}`"},
+                          {"type": "mrkdwn", "text": f"*Errors:*\n{error_summary}"},
+                      ],
+                  },
+                  {
+                      "type": "section",
+                      "text": {"type": "mrkdwn", "text": f"*Top Errors:*\n{errors_text}"},
+                  },
+                  {
+                      "type": "actions",
+                      "elements": [
+                          {
+                              "type": "button",
+                              "text": {"type": "plain_text", "text": "View Workflow Run"},
+                              "url": run_url,
+                          }
+                      ],
+                  },
+              ],
+          }
+
+          response = requests.post(
+              "https://slack.com/api/chat.postMessage",
+              headers={"Authorization": f"Bearer {os.environ['SLACK_BOT_TOKEN']}"},
+              json=message,
+          )
+
+          if not response.ok or not response.json().get("ok"):
+              print(f"Slack notification failed: {response.text}")
+              exit(1)
+          PYEOF
 
       - name: Review strategy
         id: review
-        if: steps.validate-secrets.outputs.secrets_ok == 'true'
+        if: steps.validate.outcome == 'success' && steps.validate-secrets.outputs.secrets_ok == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -194,7 +310,7 @@ jobs:
 
       - name: Aider build
         id: aider-build
-        if: steps.validate-secrets.outputs.secrets_ok == 'true'
+        if: steps.validate.outcome == 'success' && steps.validate-secrets.outputs.secrets_ok == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -253,6 +369,93 @@ jobs:
             /tmp/qc_eval_output.json
           if-no-files-found: warn
 
+      - name: Notify Slack on pipeline completion
+        id: notify-pipeline-completion
+        if: always() && steps.validate-secrets.outputs.secrets_ok == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ACK_CHANNEL_ID: ${{ secrets.SLACK_ACK_CHANNEL_ID }}
+        run: |
+          python - <<'PYEOF'
+          import os
+          import requests
+
+          # Determine overall pipeline status from key step outcomes
+          validate_outcome = "${{ steps.validate.outcome }}"
+          aider_outcome = "${{ steps.aider-build.outcome }}"
+          qc_outcome = "${{ steps.qc-upload-eval.outcome }}"
+
+          if validate_outcome == "failure":
+              status_emoji = "❌"
+              status_text = "Validation Failed"
+          elif aider_outcome == "failure":
+              status_emoji = "⚠️"
+              status_text = "Aider Build Failed"
+          elif qc_outcome == "failure":
+              status_emoji = "⚠️"
+              status_text = "QC Backtest Failed"
+          elif aider_outcome == "success" and qc_outcome == "success":
+              status_emoji = "✅"
+              status_text = "Pipeline Completed Successfully"
+          else:
+              status_emoji = "⏭️"
+              status_text = "Pipeline Completed (Some Steps Skipped)"
+
+          spec_file = "${{ matrix.spec_file }}"
+          run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Build Slack Block Kit message summarizing the full pipeline run
+          message = {
+              "channel": os.environ["SLACK_ACK_CHANNEL_ID"],
+              "text": f"{status_emoji} ACB Pipeline: {status_text}",
+              "blocks": [
+                  {
+                      "type": "header",
+                      "text": {"type": "plain_text", "text": f"{status_emoji} {status_text}"},
+                  },
+                  {
+                      "type": "section",
+                      "fields": [
+                          {"type": "mrkdwn", "text": f"*Spec:*\n`{spec_file}`"},
+                          {"type": "mrkdwn", "text": f"*Run ID:*\n`${{ github.run_id }}`"},
+                      ],
+                  },
+                  {
+                      "type": "section",
+                      "text": {
+                          "type": "mrkdwn",
+                          "text": (
+                              f"*Step Outcomes:*\n"
+                              f"• Validate: {validate_outcome}\n"
+                              f"• Aider Build: {aider_outcome or 'skipped'}\n"
+                              f"• QC Backtest: {qc_outcome or 'skipped'}"
+                          ),
+                      },
+                  },
+                  {
+                      "type": "actions",
+                      "elements": [
+                          {
+                              "type": "button",
+                              "text": {"type": "plain_text", "text": "View Workflow Run"},
+                              "url": run_url,
+                          }
+                      ],
+                  },
+              ],
+          }
+
+          response = requests.post(
+              "https://slack.com/api/chat.postMessage",
+              headers={"Authorization": f"Bearer {os.environ['SLACK_BOT_TOKEN']}"},
+              json=message,
+          )
+
+          if not response.ok or not response.json().get("ok"):
+              # Notification failure should not block the pipeline
+              print(f"Slack notification failed: {response.text}")
+          PYEOF
+
       - name: E2E Step Report
         id: e2e-report
         if: always()
@@ -278,21 +481,24 @@ jobs:
           missing_secrets = "${{ steps.validate-secrets.outputs.missing_secrets }}"
 
           steps_data = [
-              ("checkout",          "Checkout repository",              "${{ steps.checkout.outcome }}"),
-              ("validate-secrets",  "Validate required secrets",        "${{ steps.validate-secrets.outcome }}"),
-              ("setup-python",      "Set up Python 3.11",               "${{ steps.setup-python.outcome }}"),
-              ("cache-pip",         "Cache pip dependencies",           "${{ steps.cache-pip.outcome }}"),
-              ("install-deps",      "Install dependencies",             "${{ steps.install-deps.outcome }}"),
-              ("verify-deps",       "Verify dependencies",              "${{ steps.verify-deps.outcome }}"),
-              ("validate",          "Validate spec",                    "${{ steps.validate.outcome }}"),
-              ("review",            "Review strategy",                  "${{ steps.review.outcome }}"),
-              ("evaluate",          "Post reviewer results",            "${{ steps.evaluate.outcome }}"),
-              ("aider-build",       "Aider build",                      "${{ steps.aider-build.outcome }}"),
-              ("spec-name",         "Compute spec name",                "${{ steps.spec-name.outcome }}"),
-              ("pre-commit-gates",  "Pre-commit quality gates",         "${{ steps.pre-commit-gates.outcome }}"),
-              ("qc-upload-eval",    "QC Upload and Backtest",           "${{ steps.qc-upload-eval.outcome }}"),
-              ("human-review",      "Human review and artifacts",       "${{ steps.human-review.outcome }}"),
-              ("upload-artifacts",  "Upload evaluation artifacts",      "${{ steps.upload-artifacts.outcome }}"),
+              ("checkout",                   "Checkout repository",                    "${{ steps.checkout.outcome }}"),
+              ("validate-secrets",           "Validate required secrets",              "${{ steps.validate-secrets.outcome }}"),
+              ("setup-python",               "Set up Python 3.11",                     "${{ steps.setup-python.outcome }}"),
+              ("cache-pip",                  "Cache pip dependencies",                 "${{ steps.cache-pip.outcome }}"),
+              ("install-deps",               "Install dependencies",                   "${{ steps.install-deps.outcome }}"),
+              ("verify-deps",                "Verify dependencies",                    "${{ steps.verify-deps.outcome }}"),
+              ("validate",                   "Validate spec",                          "${{ steps.validate.outcome }}"),
+              ("format-validation",          "Format validation results to summary",   "${{ steps.format-validation.outcome }}"),
+              ("notify-validation-failure",  "Notify Slack on validation failure",     "${{ steps.notify-validation-failure.outcome }}"),
+              ("review",                     "Review strategy",                        "${{ steps.review.outcome }}"),
+              ("evaluate",                   "Post reviewer results",                  "${{ steps.evaluate.outcome }}"),
+              ("aider-build",                "Aider build",                            "${{ steps.aider-build.outcome }}"),
+              ("spec-name",                  "Compute spec name",                      "${{ steps.spec-name.outcome }}"),
+              ("pre-commit-gates",           "Pre-commit quality gates",               "${{ steps.pre-commit-gates.outcome }}"),
+              ("qc-upload-eval",             "QC Upload and Backtest",                 "${{ steps.qc-upload-eval.outcome }}"),
+              ("human-review",               "Human review and artifacts",             "${{ steps.human-review.outcome }}"),
+              ("upload-artifacts",           "Upload evaluation artifacts",            "${{ steps.upload-artifacts.outcome }}"),
+              ("notify-pipeline-completion", "Notify Slack on pipeline completion",    "${{ steps.notify-pipeline-completion.outcome }}"),
           ]
 
           icons = {

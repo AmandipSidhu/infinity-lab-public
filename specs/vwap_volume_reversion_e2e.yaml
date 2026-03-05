@@ -1,9 +1,16 @@
 # VWAP Volume-Confirmed Mean Reversion - E2E Test Strategy
 
-name: VWAP Volume Reversion E2E
-version: 1.0.0
-date_created: 2026-03-04
-author: Infinity Lab
+metadata:
+  name: "VWAP Volume Reversion E2E"
+  version: "1.0.0"
+  author: "Infinity Lab"
+  created_at: "2026-03-04"
+  description: >-
+    Intraday mean reversion strategy identifying 3-sigma VWAP deviations with
+    institutional volume confirmation (1.5x avg) on SPY minute bars. Uses
+    ATR-based stops and a 5-minute max hold time. Encodes MIA2 learnings:
+    data checks before logic, QC built-in VWAP, volume confirmation mandatory.
+
 purpose: |
   End-to-end pipeline test with real production value.
   Tests Aider's ability to implement a VWAP-based mean reversion strategy with:
@@ -24,21 +31,14 @@ purpose: |
   - Scalable to multi-instrument deployment
 
 strategy:
-  name: VWAP Volume Reversion E2E
-  description: |
-    Intraday mean reversion strategy that identifies extreme deviations from VWAP
-    (3-sigma) and enters when institutional volume confirms the reversal.
-    
-    Core edge: Price extremes away from VWAP create mean reversion opportunities,
-    but only when volume suggests institutional participation (1.5x average).
-    
-    Position sizing based on volatility (ATR), exits on VWAP reversion or
-    time-based stop (5 minutes max hold).
-  
-  style: mean_reversion_scalper
-  timeframe: 1min
+  type: mean_reversion
   max_holding_period: 5 minutes
-  
+
+  universe:
+    symbols:
+      - SPY
+    resolution: minute
+
   instruments:
     - symbol: SPY
       asset_class: equity
@@ -68,8 +68,17 @@ strategy:
         - VIX data available
         - Sufficient history (390 bars minimum)
       on_failure: Log error and halt (do not attempt trades)
+
+    indicators:
+      # Flat list required by spec_validator.py (SVR-W010) for reproducibility checks
+      - VWAP
+      - Volume_MA(20)
+      - ATR(14)
+      - VIX
+    min_history_days: 2
   
   indicators:
+    # Detailed indicator configurations used by Aider for implementation
     vwap:
       name: VWAP
       implementation: |
@@ -94,71 +103,20 @@ strategy:
       name: VIX
       purpose: Regime filter (avoid high VIX > 30 environments)
       threshold: 30
-  
-  entry_conditions:
-    long:
-      description: Price oversold, institutional volume confirms reversal
-      rules:
-        - condition: price_below_vwap
-          details: Close < VWAP - (3 * VWAP_std_dev)
-          reason: 3-sigma deviation signals extreme oversold
-        
-        - condition: volume_confirmation
-          details: Current bar volume > 1.5 * Volume_MA(20)
-          reason: |
-            Institutional participation suggests reversal strength.
-            MIA2 lesson: Volume confirmation was critical missing piece.
-        
-        - condition: regime_filter
-          details: VIX < 30
-          reason: Avoid mean reversion in high-volatility regimes
-        
-        - condition: time_filter
-          details: Market hours 9:45 AM - 3:45 PM ET
-          reason: Avoid open/close volatility and low liquidity
-    
-    short:
-      description: Price overbought, institutional volume confirms reversal
-      rules:
-        - condition: price_above_vwap
-          details: Close > VWAP + (3 * VWAP_std_dev)
-          reason: 3-sigma deviation signals extreme overbought
-        
-        - condition: volume_confirmation
-          details: Current bar volume > 1.5 * Volume_MA(20)
-          reason: Institutional participation suggests reversal strength
-        
-        - condition: regime_filter
-          details: VIX < 30
-          reason: Avoid mean reversion in high-volatility regimes
-        
-        - condition: time_filter
-          details: Market hours 9:45 AM - 3:45 PM ET
-          reason: Avoid open/close volatility
-  
-  exit_conditions:
-    profit_target:
-      description: Exit when price reverts to VWAP
-      long: Close >= VWAP
-      short: Close <= VWAP
-      reason: Mean reversion complete
-    
-    stop_loss:
-      type: volatility_based
-      distance: 2 * ATR(14)
-      reason: Wider stops for volatile periods, tighter when calm
-    
-    time_based:
-      max_hold: 5 minutes
-      reason: |
-        Scalper strategy, avoid overnight risk.
-        MIA2 design: 1-5 minute holds typical.
-    
-    regime_exit:
-      condition: VIX spikes above 30 mid-trade
-      action: Exit all positions immediately
-      reason: Regime change invalidates mean reversion thesis
-  
+
+  signals:
+    entry:
+      conditions:
+        - "Long: Close < VWAP - (3 * VWAP_std_dev) AND volume > 1.5 * Volume_MA(20) AND VIX < 30 AND time 09:45-15:45 ET"
+        - "Short: Close > VWAP + (3 * VWAP_std_dev) AND volume > 1.5 * Volume_MA(20) AND VIX < 30 AND time 09:45-15:45 ET"
+    exit:
+      conditions:
+        - "Long profit target: Close >= VWAP (mean reversion complete)"
+        - "Short profit target: Close <= VWAP (mean reversion complete)"
+        - "Stop loss: price moves 2 * ATR(14) against position"
+        - "Time exit: position held > 5 minutes"
+        - "Regime exit: VIX > 30 mid-trade, exit immediately"
+
   position_sizing:
     method: volatility_based
     base_risk_per_trade: 1.5%
@@ -172,7 +130,12 @@ strategy:
     reason: E2E test focuses on signal quality, not portfolio construction
   
   risk_management:
-    max_daily_loss: 6%
+    stop_loss: 0.04  # 2 * ATR(14), approximate 4% max loss per trade
+    max_position_size: 0.15  # volatility-based sizing, max 15% of account equity
+    position_sizing: volatility_based
+    take_profit: 0.03  # dynamic VWAP reversion target, minimum 3% expected
+    max_drawdown: 0.12
+    max_daily_loss: 0.06
     max_consecutive_losses: 3
     daily_max_trades: 20
     
@@ -195,63 +158,69 @@ strategy:
       PF > 1.5: Winners significantly larger than losers
       Duration < 10 min: Scalper should exit quickly
 
-backtest:
-  periods:
-    - name: Trend Up
-      start: 2021-01-04
-      end: 2021-06-30
-      expected: Small losses (trend opposes mean reversion)
+  backtesting:
+    start_date: "2021-01-04"
+    end_date: "2024-12-31"
+    initial_capital: 100000
+    min_trades: 200
+    benchmark: "SPY"
+
+    periods:
+      - name: Trend Up
+        start: 2021-01-04
+        end: 2021-06-30
+        expected: Small losses (trend opposes mean reversion)
+      
+      - name: Trend Down
+        start: 2022-01-03
+        end: 2022-06-30
+        expected: Small losses (trend opposes mean reversion)
+      
+      - name: Mean Reversion Primary
+        start: 2023-01-03
+        end: 2023-06-30
+        expected: |
+          BEST performance. Choppy/ranging regime ideal for mean reversion.
+          Should see Sharpe > 1.5, win rate > 60%.
+      
+      - name: Sideways Stable
+        start: 2023-07-03
+        end: 2023-09-29
+        expected: Moderate gains, lower volatility
+      
+      - name: Sideways Choppy
+        start: 2023-10-02
+        end: 2023-12-29
+        expected: Good gains, more trade opportunities
+      
+      - name: Volatile Breakout
+        start: 2024-01-02
+        end: 2024-03-28
+        expected: Mixed, VIX filter should protect
+      
+      - name: Recent
+        start: 2024-09-03
+        end: 2024-12-31
+        expected: Validation on latest data
     
-    - name: Trend Down
-      start: 2022-01-03
-      end: 2022-06-30
-      expected: Small losses (trend opposes mean reversion)
-    
-    - name: Mean Reversion Primary
-      start: 2023-01-03
-      end: 2023-06-30
-      expected: |
-        BEST performance. Choppy/ranging regime ideal for mean reversion.
-        Should see Sharpe > 1.5, win rate > 60%.
-    
-    - name: Sideways Stable
-      start: 2023-07-03
-      end: 2023-09-29
-      expected: Moderate gains, lower volatility
-    
-    - name: Sideways Choppy
-      start: 2023-10-02
-      end: 2023-12-29
-      expected: Good gains, more trade opportunities
-    
-    - name: Volatile Breakout
-      start: 2024-01-02
-      end: 2024-03-28
-      expected: Mixed, VIX filter should protect
-    
-    - name: Recent
-      start: 2024-09-03
-      end: 2024-12-31
-      expected: Validation on latest data
-  
-  acceptance_criteria:
-    minimum_passing_periods: 5
-    reason: |
-      Mean reversion struggles in strong trends (periods 1-2).
-      Should excel in choppy/ranging markets (periods 3-5).
-      7 periods total, need 5 passing = 71% success rate.
-  
-  data_validation:
-    critical_checks:
-      - SPY minute data available for all test periods
-      - No gaps > 10 consecutive bars
-      - VIX data available for regime filter
-    
-    on_data_issues:
-      action: HALT and log error
+    acceptance_criteria:
+      minimum_passing_periods: 5
       reason: |
-        MIA2 lesson: $20 spent debugging when root cause was missing data.
-        Fail fast on data issues, don't waste iterations on logic.
+        Mean reversion struggles in strong trends (periods 1-2).
+        Should excel in choppy/ranging markets (periods 3-5).
+        7 periods total, need 5 passing = 71% success rate.
+    
+    data_validation:
+      critical_checks:
+        - SPY minute data available for all test periods
+        - No gaps > 10 consecutive bars
+        - VIX data available for regime filter
+      
+      on_data_issues:
+        action: HALT and log error
+        reason: |
+          MIA2 lesson: $20 spent debugging when root cause was missing data.
+          Fail fast on data issues, don't waste iterations on logic.
 
 iteration_strategy:
   max_iterations: 20
