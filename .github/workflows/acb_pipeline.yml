@@ -149,6 +149,20 @@ jobs:
           python -c "import requests; print('requests', requests.__version__)"
           python -m pip show requests
 
+      - name: Notify - Spec Submitted (Gate 1)
+        id: notify-spec-submitted
+        if: steps.validate-secrets.outputs.secrets_ok == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ACK_CHANNEL_ID: ${{ secrets.SLACK_ACK_CHANNEL_ID }}
+        run: |
+          python scripts/notify_slack.py \
+            --event spec_submitted \
+            --strategy "${{ matrix.spec_file }}" \
+            --spec-path "${{ matrix.spec_file }}" \
+            --linear-id "UNI-75" \
+            --github-issue "${{ github.event.pull_request.number || 'N/A' }}"
+
       - name: Validate spec
         id: validate
         continue-on-error: true  # Don't halt pipeline; downstream steps handle the failure
@@ -487,6 +501,7 @@ jobs:
               ("cache-pip",                  "Cache pip dependencies",                 "${{ steps.cache-pip.outcome }}"),
               ("install-deps",               "Install dependencies",                   "${{ steps.install-deps.outcome }}"),
               ("verify-deps",                "Verify dependencies",                    "${{ steps.verify-deps.outcome }}"),
+              ("notify-spec-submitted",      "Notify Slack - Spec Submitted (Gate 1)", "${{ steps.notify-spec-submitted.outcome }}"),
               ("validate",                   "Validate spec",                          "${{ steps.validate.outcome }}"),
               ("format-validation",          "Format validation results to summary",   "${{ steps.format-validation.outcome }}"),
               ("notify-validation-failure",  "Notify Slack on validation failure",     "${{ steps.notify-validation-failure.outcome }}"),
@@ -557,3 +572,11 @@ jobs:
             git commit -m "ci: add E2E report for ${{ matrix.spec_file }} [run ${{ github.run_id }} attempt ${{ github.run_attempt }}]"
             git push || echo "::warning::Could not push E2E report — report exists in the workflow artifacts only."
           fi
+
+      - name: Test Slack Notification (send Hi)
+        if: steps.validate-secrets.outputs.secrets_ok == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ACK_CHANNEL_ID: ${{ secrets.SLACK_ACK_CHANNEL_ID }}
+        run: |
+          python scripts/notify_slack.py --test
