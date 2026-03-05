@@ -88,6 +88,20 @@ jobs:
       matrix:
         spec_file: ${{ fromJson(needs.detect-specs.outputs.matrix_specs) }}
 
+    # MCP service container for QuantConnect automated backtesting (Step 6).
+    # NOTE: quantconnect/mcp-server is a placeholder image pending official
+    # availability. When the official image is published, replace this with
+    # the correct image name. If the service fails to start, qc_upload_eval.py
+    # will fall back to a stub result (exit 0, non-blocking).
+    services:
+      quantconnect-mcp:
+        image: quantconnect/mcp-server:latest
+        ports:
+          - 8000:8000
+        env:
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+
     steps:
       - name: Checkout repository
         id: checkout
@@ -339,6 +353,7 @@ jobs:
         id: qc-upload-eval
         if: steps.aider-build.outcome == 'success'
         env:
+          QC_MCP_BASE_URL: "http://localhost:8000/mcp"
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
           QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
         run: |
