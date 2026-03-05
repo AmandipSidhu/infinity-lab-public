@@ -1,43 +1,36 @@
 # invalid_001_missing_fields.yaml
-# Expected errors: SVR-E001, SVR-E002, SVR-E003, SVR-E013, SVR-E014, SVR-E015,
-#                  SVR-E016, SVR-E017, SVR-E018
-# This spec is missing metadata fields and the entire risk_management and
-# performance_targets blocks.
+# Expected errors (new schema):
+#   SVR-E001 (metadata.trading_style missing)
+#   SVR-E005 (metadata.name missing)
+#   SVR-E003 (capital section entirely absent)
+#   SVR-E023 (risk_management.stop_loss missing — risk_management absent)
+#   SVR-E024 (risk_management.position_sizing missing — risk_management absent)
+#   SVR-E021 (acceptance_criteria.max_drawdown_pct missing)
+#   SVR-E046 (acceptance_criteria.min_sharpe_ratio missing)
+#   SVR-E048 (acceptance_criteria.min_profit_factor missing)
+#   SVR-E050 (acceptance_criteria.min_trades missing)
 
 metadata:
-  # name is missing — SVR-E001
-  # version is missing — SVR-E002
-  # description is missing — SVR-E003
+  # name is intentionally absent  — SVR-E005
+  # trading_style is intentionally absent — SVR-E001
+  description: "A strategy with several required fields omitted to exercise error detection."
   author: "Nobody"
+  version: "0.1"
 
-strategy:
-  type: "breakout"
+# capital section is entirely absent — SVR-E003
 
-  universe:
-    symbols:
-      - "TSLA"
-    resolution: "daily"
+data:
+  instruments:
+    - "TSLA"
+  resolution: "daily"
+  start_date: "2020-01-01"
+  end_date: "2024-12-31"
 
-  signals:
-    entry:
-      conditions:
-        - "price breaks above 52-week high by 2%"
-    exit:
-      conditions:
-        - "price drops 5% below entry"
+signals:
+  entry:
+    - "Price breaks above the 52-week high by 2%"
+  exit:
+    - "Exit after 10 bars"
 
-  # risk_management block is entirely absent — SVR-E013 (also triggers SVR-E014, SVR-E015)
-  # performance_targets block is entirely absent — SVR-E016 (also SVR-E017, SVR-E018)
-
-  backtesting:
-    start_date: "2020-01-01"
-    end_date: "2024-12-31"
-    initial_capital: 50000
-    min_trades: 150
-    benchmark: "QQQ"
-
-  data_requirements:
-    resolution: "daily"
-    min_history_days: 260
-    indicators:
-      - "52-week high"
+# risk_management is entirely absent — SVR-E023, SVR-E024
+# acceptance_criteria is entirely absent — SVR-E021, E046, E048, E050
