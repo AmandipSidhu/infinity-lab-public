@@ -105,6 +105,39 @@ def _build_aider_cmd(model: str, spec_file: Path, spec_name: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Git commit helper
+# ---------------------------------------------------------------------------
+
+
+def _commit_and_push(spec_name: str, tier: int, model: str) -> None:
+    """Stage, commit, and push the generated strategy and test files.
+
+    Uses ``git diff --cached --quiet`` to skip the commit when there are no
+    staged changes (e.g. aider wrote identical content on a retry).
+    """
+    strategy_file = f"strategies/{spec_name}.py"
+    test_file = f"tests/test_{spec_name}.py"
+    subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"],
+        check=True,
+    )
+    subprocess.run(["git", "add", strategy_file, test_file], check=True)
+    diff_result = subprocess.run(["git", "diff", "--cached", "--quiet"], check=False)
+    if diff_result.returncode != 0:
+        subprocess.run(
+            [
+                "git",
+                "commit",
+                "-m",
+                f"feat(strategies): aider build {spec_name} via tier {tier} ({model})",
+            ],
+            check=True,
+        )
+        subprocess.run(["git", "push"], check=True)
+
+
+# ---------------------------------------------------------------------------
 # Aider invocation
 # ---------------------------------------------------------------------------
 
@@ -249,6 +282,7 @@ def run_tier_1(spec_file: Path, spec_name: str) -> TierRunResult:
         combined = result.stdout + result.stderr
 
         if result.success:
+            _commit_and_push(spec_name, 1, model)
             return TierRunResult(True, 1, model, iteration + 1, "", combined)
 
         # Rate limit: backoff and retry; escalate after max retries.
@@ -307,6 +341,7 @@ def run_tier_2(spec_file: Path, spec_name: str) -> TierRunResult:
         combined = result.stdout + result.stderr
 
         if result.success:
+            _commit_and_push(spec_name, 2, model)
             return TierRunResult(True, 2, model, iteration + 1, "", combined)
 
         if _detect_daily_limit(combined):
@@ -347,6 +382,7 @@ def run_tier_3(spec_file: Path, spec_name: str) -> TierRunResult:
         combined = result.stdout + result.stderr
 
         if result.success:
+            _commit_and_push(spec_name, 3, model)
             return TierRunResult(True, 3, model, iteration + 1, "", combined)
 
         pass_rate = _extract_test_pass_rate(combined)
@@ -397,6 +433,7 @@ def run_tier_4(spec_file: Path, spec_name: str) -> TierRunResult:
         last_output = result.stdout + result.stderr
 
         if result.success:
+            _commit_and_push(spec_name, 4, model)
             return TierRunResult(True, 4, model, iteration + 1, "", last_output)
 
     return TierRunResult(
@@ -611,6 +648,7 @@ def build(spec_file_str: str) -> bool:
     stub_path = _write_stub_strategy(spec_file, spec_name, spec_data)
     print(f"[aider_builder] WARNING: stub strategy written to {stub_path}. "
           "Replace with real implementation before production use.", file=sys.stderr)
+    _commit_and_push(spec_name, 4, last_model)
     _write_step_summary(
         spec_file_str,
         spec_name,
