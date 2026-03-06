@@ -303,8 +303,8 @@ class TestCheckAst:
         assert param_violations == []
 
     def test_vararg_plus_kwargs_can_exceed_limit(self, tmp_path: Path) -> None:
-        # def f(a, b, c, *args, **kwargs) has 5 params — should fail
-        source = "def f(a, b, c, *args, **kwargs):\n    pass\n"
+        # def f(a, b, c, d, e, f, *args, **kwargs) has 8 params — should fail
+        source = "def f(a, b, c, d, e, f, *args, **kwargs):\n    pass\n"
         strategy = _make_strategy(tmp_path, source)
         violations = check_ast(strategy)
         param_violations = [v for v in violations if v["check"] == "ast_param_count"]

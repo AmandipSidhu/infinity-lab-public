@@ -371,6 +371,15 @@ jobs:
           path: /tmp/pre_commit_gates_${{ steps.spec-name.outputs.spec_name }}.json
           if-no-files-found: warn
 
+      - name: Upload pre-commit gates output
+        id: upload-pre-commit-gates-output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-commit-gates-output
+          path: /tmp/pre_commit_gates_output.json
+          if-no-files-found: warn
+
       - name: QC Upload and Backtest
         id: qc-upload-eval
         if: steps.aider-build.outcome == 'success'
