@@ -7,54 +7,41 @@ each optimised for a different stage of the strategy lifecycle:
 
 | Script | Transport | Trigger | Purpose |
 |--------|-----------|---------|---------|
-| `scripts/qc_upload_eval.py` | MCP / JSON-RPC 2.0 | Automated CI | Fast validation backtest |
+| `scripts/qc_upload_eval.py` | lean-cli (local Docker) | Automated CI | Fast validation backtest |
 | `scripts/qc_deploy_live.py` | REST API v2 | Manual / human-approved | Live deployment |
 
 ---
 
-## Path 1 — Automated CI Backtesting (MCP)
+## Path 1 — Automated CI Backtesting (lean-cli)
 
-**Script**: `scripts/qc_upload_eval.py`
+**Tool**: `lean` CLI (`pip install lean`)
 
-**Used by**: `.github/workflows/acb_pipeline.yml`, Step 6 (`qc-upload-eval`)
+**Used by**: `.github/workflows/acb_pipeline.yml`, step `lean-backtest` (runs after Aider build)
 
 ### How it works
 
-1. The CI workflow starts a `quantconnect-mcp` service container
-   (`quantconnect/mcp-server:latest`) on port 8000.
-2. `qc_upload_eval.py` connects to `QC_MCP_BASE_URL`
-   (default: `http://localhost:8000/mcp`) using JSON-RPC 2.0.
-3. Four MCP tool calls are made in sequence:
-   - `create_project` → returns `project_id`
-   - `create_file` → uploads strategy source
-   - `create_backtest` → triggers backtest, returns `backtest_id`
-   - `read_backtest` (polled) → returns statistics on completion
-4. FitnessTracker constraints are evaluated (Sharpe Ratio, Max Drawdown).
-5. Results are written to `/tmp/qc_eval_output.json` for downstream steps.
+1. The CI workflow installs `lean` via `pip install lean`.
+2. After Aider writes the strategy file, the `Lean local backtest` step runs:
+   ```bash
+   lean backtest "strategies/<spec_name>" --output /tmp/lean_backtest_output
+   ```
+3. On success the backtest result JSON is copied to `/tmp/backtest_result.json`.
+4. On failure the error log is echoed to `GITHUB_STEP_SUMMARY`; the step exits 0
+   so downstream CI steps are not blocked.
+5. The result artifact is uploaded as `lean-backtest-result-<spec_name>`.
 
-### Stub / fallback behaviour (non-blocking CI)
+### Fallback behaviour (non-blocking CI)
 
-The script exits `0` and writes a stub PASS result when:
-- `QC_MCP_BASE_URL` environment variable is **not set** (local dev)
-- The MCP service container fails to start (`ConnectionError`)
-
-This ensures CI is never blocked by MCP infrastructure issues.
-
-### Environment variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `QC_MCP_BASE_URL` | Yes (CI) | Full URL of the MCP server, e.g. `http://localhost:8000/mcp` |
-| `QC_USER_ID` | Service container | Passed to the MCP container |
-| `QC_API_TOKEN` | Service container | Passed to the MCP container |
+If `lean backtest` exits non-zero, the step:
+- Writes `{"status":"failed","exit_code":<n>}` to `/tmp/backtest_result.json`
+- Appends the last 50 lines of the lean log to `GITHUB_STEP_SUMMARY`
+- Continues without failing the workflow (`set +e`)
 
 ### Exit codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Backtest passed, or stub fallback |
-| 1 | Backtest failed constraints, or unrecoverable MCP error |
-| 2 | Invalid arguments or file not found |
+| 0 | Backtest succeeded, or lean failure captured non-fatally |
 
 ---
 
@@ -119,10 +106,14 @@ Push spec → CI triggers
     │
     ├─ Step 1-5: Spec validation, strategy review, Aider build, pre-commit gates
     │
-    ├─ Step 6: qc_upload_eval.py (MCP → automated backtest)
-    │          └─ Writes /tmp/qc_eval_output.json
+    ├─ Step 6: lean backtest (lean-cli → local Docker backtest)
+    │          └─ Writes /tmp/backtest_result.json
     │
-    ├─ Step 7: human_review_artifacts.py
+    ├─ Step 7: qc_upload_eval.py (uploads result to QC cloud for deep evaluation)
+    │          └─ Writes /tmp/qc_eval_output.json
+    │          └─ Falls back gracefully if QC_MCP_BASE_URL is not set
+    │
+    ├─ Step 8: human_review_artifacts.py
     │          └─ Posts results to GitHub Step Summary + PR comment
     │
     └─ Human reviews the CI report
@@ -133,9 +124,9 @@ Push spec → CI triggers
 
 ---
 
-## MCP Service Container
+## lean-cli Local Backtesting
 
-The `quantconnect/mcp-server:latest` Docker image is referenced in the CI
-workflow as a service container. If this official image is not yet publicly
-available, the `qc_upload_eval.py` stub fallback ensures CI still passes.
-Monitor https://hub.docker.com/r/quantconnect/mcp-server for availability.
+The `lean` CLI (`pip install lean`) is used in CI to run local backtests using
+the official `quantconnect/lean` Docker image. No external service container is
+required. The lean backtest step is non-blocking: failures are captured and
+surfaced in `GITHUB_STEP_SUMMARY` without failing the overall workflow.
