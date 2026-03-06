@@ -34,6 +34,7 @@ from aider_builder import (  # noqa: E402
     _detect_syntax_error,
     _extract_error_fingerprint,
     _extract_test_pass_rate,
+    _read_backtest_metrics,
 )
 from spec_validator import main as validator_main  # noqa: E402
 from strategy_reviewer import main as reviewer_main  # noqa: E402
@@ -236,8 +237,65 @@ class TestAiderBuilderHelpers:
         assert "--yes" in cmd
         assert "--read" in cmd
         assert "config/aider_system_prompt_with_tools.txt" in cmd
+        assert "--mcp-config" in cmd
+        assert "config/qc_tools_manifest.json" in cmd
         assert "strategies/my_strategy.py" in cmd
         assert "tests/test_my_strategy.py" in cmd
+
+
+# ---------------------------------------------------------------------------
+# _read_backtest_metrics
+# ---------------------------------------------------------------------------
+
+
+class TestReadBacktestMetrics:
+    def test_happy_path_statistics_and_runtime(self, tmp_path: Path) -> None:
+        data = {
+            "Statistics": {"Sharpe Ratio": 1.5, "Total Return": 0.25},
+            "RuntimeStatistics": {"Max Drawdown": -0.15},
+        }
+        p = tmp_path / "backtest_result.json"
+        p.write_text(json.dumps(data), encoding="utf-8")
+        result = _read_backtest_metrics(p)
+        assert result["Sharpe Ratio"] == 1.5
+        assert result["Total Return"] == 0.25
+        assert result["Max Drawdown"] == -0.15
+
+    def test_zero_sharpe_not_silently_skipped(self, tmp_path: Path) -> None:
+        """Explicit None checks must preserve 0.0 Sharpe Ratio."""
+        data = {"Statistics": {"Sharpe Ratio": 0.0}}
+        p = tmp_path / "backtest_result.json"
+        p.write_text(json.dumps(data), encoding="utf-8")
+        result = _read_backtest_metrics(p)
+        assert "Sharpe Ratio" in result
+        assert result["Sharpe Ratio"] == 0.0
+
+    def test_key_fallback_from_top_level(self, tmp_path: Path) -> None:
+        """Keys not in Statistics/RuntimeStatistics fall back to top-level."""
+        data = {"Sharpe Ratio": 2.0, "Total Return": 0.10}
+        p = tmp_path / "backtest_result.json"
+        p.write_text(json.dumps(data), encoding="utf-8")
+        result = _read_backtest_metrics(p)
+        assert result["Sharpe Ratio"] == 2.0
+        assert result["Total Return"] == 0.10
+
+    def test_sub_dict_takes_precedence_over_top_level(self, tmp_path: Path) -> None:
+        """Statistics sub-key wins over a conflicting top-level key."""
+        data = {"Sharpe Ratio": 99.0, "Statistics": {"Sharpe Ratio": 1.5}}
+        p = tmp_path / "backtest_result.json"
+        p.write_text(json.dumps(data), encoding="utf-8")
+        result = _read_backtest_metrics(p)
+        assert result["Sharpe Ratio"] == 1.5
+
+    def test_missing_file_returns_empty_dict(self, tmp_path: Path) -> None:
+        result = _read_backtest_metrics(tmp_path / "nonexistent.json")
+        assert result == {}
+
+    def test_invalid_json_returns_empty_dict(self, tmp_path: Path) -> None:
+        p = tmp_path / "backtest_result.json"
+        p.write_text("not valid json {{", encoding="utf-8")
+        result = _read_backtest_metrics(p)
+        assert result == {}
 
 
 # ---------------------------------------------------------------------------

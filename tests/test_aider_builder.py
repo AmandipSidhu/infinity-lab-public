@@ -53,6 +53,7 @@ from aider_builder import (  # noqa: E402
     _detect_syntax_error,
     _extract_error_fingerprint,
     _extract_test_pass_rate,
+    _read_backtest_metrics,
     _write_step_summary,
     build,
     main,
@@ -623,8 +624,8 @@ class TestBuild:
         assert call_args[5] is True  # success=True
 
     def test_escalates_through_all_tiers_to_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # FIXED: when all 4 tiers fail, build() now writes a stub strategy and
-        # returns True so downstream steps are not blocked.
+        # When all 4 tiers fail, build() writes a stub strategy and returns False
+        # so CI fails visibly instead of going hollow green.
         monkeypatch.chdir(tmp_path)
         fail_result_1 = TierRunResult(False, 1, _TIER1_MODEL, 30, "rate_limit", "")
         fail_result_2 = TierRunResult(False, 2, _TIER2_MODEL, 30, "daily_limit", "")
@@ -641,12 +642,12 @@ class TestBuild:
             mock_stub.return_value = Path("strategies/valid_001.py")
             result = build(str(VALID_SPEC))
 
-        assert result is True  # stub written → exits 0 so downstream steps run
+        assert result is False  # stub written → CI fails visibly
         mock_stub.assert_called_once()
         mock_cap.assert_called_once_with("valid_001", 4, _TIER4_MODEL)
         mock_summary.assert_called_once()
         call_args = mock_summary.call_args[0]
-        assert call_args[5] is True  # success=True (stub counts as success)
+        assert call_args[5] is True  # success=True (stub counts as success in summary)
 
     def test_success_on_tier_3(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
