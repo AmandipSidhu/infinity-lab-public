@@ -4,7 +4,6 @@ Covers:
 - detect-specs matrix JSON output (the logic that runs in the detect-specs job)
 - spec_validator smoke mode (no mocks needed; uses corpus fixtures)
 - strategy_reviewer smoke mode (mocked _run_fallback_chain)
-- ack_gate smoke mode (mocked run_ack_gate)
 - aider_builder smoke mode (mocked subprocess)
 - constraints.txt / requirements.txt dependency pins are internally consistent
 """
@@ -23,9 +22,7 @@ import yaml
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-import ack_gate  # noqa: E402
 import strategy_reviewer  # noqa: E402
-from ack_gate import main as ack_main  # noqa: E402
 from aider_builder import (  # noqa: E402
     _build_aider_cmd,
     _detect_api_unavailable,
@@ -147,40 +144,6 @@ class TestStrategyReviewerSmoke:
     def test_missing_spec_exits_2(self) -> None:
         rc = reviewer_main(["--spec", "/nonexistent/spec.yaml"])
         assert rc == 2
-
-
-# ---------------------------------------------------------------------------
-# ack_gate smoke
-# ---------------------------------------------------------------------------
-
-
-class TestAckGateSmoke:
-    def test_no_concerns_calls_run_ack_gate_with_empty_list(
-        self, tmp_path: Path
-    ) -> None:
-        output = tmp_path / "reviewer.json"
-        output.write_text(json.dumps(_PASS_RESULT), encoding="utf-8")
-        with patch.object(ack_gate, "run_ack_gate", return_value=0) as mock_run:
-            rc = ack_main(["--warns", str(output)])
-        assert rc == 0
-        mock_run.assert_called_once_with([])
-
-    def test_warn_verdict_passes_concerns(self, tmp_path: Path) -> None:
-        data = {
-            "verdict": "WARN",
-            "risk_level": "medium",
-            "concerns": ["SRV-W001: missing author", "SRV-W006: missing max_drawdown"],
-        }
-        output = tmp_path / "reviewer.json"
-        output.write_text(json.dumps(data), encoding="utf-8")
-        with patch.object(ack_gate, "run_ack_gate", return_value=0) as mock_run:
-            rc = ack_main(["--warns", str(output)])
-        assert rc == 0
-        mock_run.assert_called_once_with(data["concerns"])
-
-    def test_missing_file_returns_1(self, tmp_path: Path) -> None:
-        rc = ack_main(["--warns", str(tmp_path / "nonexistent.json")])
-        assert rc == 1
 
 
 # ---------------------------------------------------------------------------

@@ -21,8 +21,8 @@ The workflow MUST execute these steps **in order**, with the exact gating logic 
 2. strategy_reviewer.py → collect all WARNs (SVR + SRV codes) into a list
     ↓
 3. if WARN count == 0: proceed to exit 0
-   if WARN count >= 1: call ack_gate.py with the WARN list → block until ACK
-    ↓ ACK received
+   if WARN count >= 1: surface WARNs in step summary (acknowledgment gate removed in v4.4)
+    ↓
 4. Exit 0 (pipeline clear — Aider build step will be added in Phase 2)
 ```
 
@@ -44,7 +44,7 @@ All secrets are already set in the repository's GitHub Actions secrets:
 
 | Secret | Purpose |
 |---|---|
-| `SLACK_BOT_TOKEN` | Slack Web API bot token for `ack_gate.py` |
+| `SLACK_BOT_TOKEN` | Slack Web API bot token for pipeline notifications |
 | `SLACK_ACK_CHANNEL_ID` | Slack channel ID (`C0A3CGW9ECS` = `#forge_reports`) |
 | `GEMINI_API_KEY` | Required by `strategy_reviewer.py` (Gemini model tier 1) |
 
@@ -64,10 +64,6 @@ python scripts/spec_validator.py --spec $SPEC_FILE
 # Step 2 — Strategy Reviewer
 python scripts/strategy_reviewer.py --spec $SPEC_FILE --output /tmp/reviewer_output.json
 # Always exits 0; write verdict + warn list to --output JSON
-
-# Step 3 — ACK Gate (only if WARNs > 0)
-python scripts/ack_gate.py --warns /tmp/reviewer_output.json
-# Exits 0 on ACK received; exits 1 on timeout
 ```
 
 The `SPEC_FILE` is the path to the changed spec YAML file. Use `git diff --name-only` filtered to `specs/` to find it.
@@ -81,7 +77,6 @@ The `SPEC_FILE` is the path to the changed spec YAML file. Use `git diff --name-
 - Cache pip dependencies using `actions/cache@v4` keyed on `requirements.txt` hash.
 - All steps must have `id:` fields so outputs can be referenced.
 - The workflow must surface the reviewer's WARN list in the GitHub Actions step summary (`$GITHUB_STEP_SUMMARY`) so it is visible in the PR check UI.
-- On ACK gate timeout (exit 1): the workflow must post a final failure annotation with the `gate_id` so it is traceable.
 - Use `continue-on-error: false` everywhere — no silent failures.
 
 ---
@@ -101,8 +96,6 @@ If `requirements.txt` does not already include the dependencies needed by the sc
 - [ ] Workflow triggers correctly on `specs/` path changes
 - [ ] `spec_validator.py` ERROR causes immediate workflow failure (red check)
 - [ ] `strategy_reviewer.py` WARNs appear in the GitHub Step Summary
-- [ ] `ack_gate.py` blocks the workflow until `ACK <TOKEN>` is posted in Slack
-- [ ] ACK gate timeout causes workflow failure with `gate_id` annotation
-- [ ] Zero WARNs path skips ACK gate and exits 0
+- [ ] Zero WARNs path exits 0
 - [ ] `requirements.txt` is complete (all script deps present)
 - [ ] No placeholders anywhere in the workflow or any modified files

@@ -473,21 +473,51 @@ def check_stub_detection(strategy_file: Path) -> list[dict[str, Any]]:
 
 def run_gates(strategy_file: Path) -> dict[str, Any]:
     """Run all quality gates against *strategy_file* and return a summary dict."""
-    violations: list[dict[str, Any]] = []
+    ccn_violations = check_cyclomatic_complexity(strategy_file)
+    bandit_violations = check_bandit(strategy_file)
+    semgrep_violations = check_semgrep(strategy_file)
+    ast_violations = check_ast(strategy_file)
+    stub_violations = check_stub_detection(strategy_file)
 
-    violations.extend(check_cyclomatic_complexity(strategy_file))
-    violations.extend(check_bandit(strategy_file))
-    violations.extend(check_semgrep(strategy_file))
-    violations.extend(check_ast(strategy_file))
-    violations.extend(check_stub_detection(strategy_file))
+    # Separate function-length and param-count violations from the AST check
+    fn_length_violations = [
+        v for v in ast_violations if v.get("check") == "ast_function_length"
+    ]
+    param_count_violations = [
+        v for v in ast_violations if v.get("check") == "ast_param_count"
+    ]
 
-    errors = [v for v in violations if v.get("severity") == "ERROR"]
+    all_violations: list[dict[str, Any]] = (
+        ccn_violations
+        + bandit_violations
+        + semgrep_violations
+        + ast_violations
+        + stub_violations
+    )
+
+    errors = [v for v in all_violations if v.get("severity") == "ERROR"]
+
+    def _gate_result(gate_violations: list[dict[str, Any]]) -> dict[str, Any]:
+        gate_errors = [v for v in gate_violations if v.get("severity") == "ERROR"]
+        return {
+            "result": "FAIL" if gate_errors else "PASS",
+            "violation_count": len(gate_violations),
+            "violations": gate_violations,
+        }
+
     return {
         "strategy_file": str(strategy_file),
         "result": "FAIL" if errors else "PASS",
-        "violation_count": len(violations),
+        "violation_count": len(all_violations),
         "error_count": len(errors),
-        "violations": violations,
+        "violations": all_violations,
+        "gates": {
+            "ccn_check": _gate_result(ccn_violations),
+            "bandit": _gate_result(bandit_violations),
+            "semgrep": _gate_result(semgrep_violations),
+            "function_length": _gate_result(fn_length_violations),
+            "stub_detection": _gate_result(stub_violations),
+        },
     }
 
 
