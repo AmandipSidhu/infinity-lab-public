@@ -361,7 +361,15 @@ jobs:
         run: |
           python scripts/pre_commit_gates.py \
             --strategy "strategies/${{ steps.spec-name.outputs.spec_name }}.py" \
-            --output /tmp/pre_commit_gates_output.json
+            --output /tmp/pre_commit_gates_${{ steps.spec-name.outputs.spec_name }}.json
+
+      - name: Upload pre-commit gates results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-commit-gates-results-${{ steps.spec-name.outputs.spec_name }}
+          path: /tmp/pre_commit_gates_${{ steps.spec-name.outputs.spec_name }}.json
+          if-no-files-found: warn
 
       - name: QC Upload and Backtest
         id: qc-upload-eval
@@ -384,7 +392,7 @@ jobs:
         run: |
           python scripts/human_review_artifacts.py \
             --spec "${{ matrix.spec_file }}" \
-            --pre-commit-output /tmp/pre_commit_gates_output.json \
+            --pre-commit-output /tmp/pre_commit_gates_${{ steps.spec-name.outputs.spec_name }}.json \
             --qc-output /tmp/qc_eval_output.json
 
       - name: Upload evaluation artifacts
@@ -394,7 +402,7 @@ jobs:
         with:
           name: evaluation-artifacts-${{ steps.spec-name.outputs.spec_name }}
           path: |
-            /tmp/pre_commit_gates_output.json
+            /tmp/pre_commit_gates_${{ steps.spec-name.outputs.spec_name }}.json
             /tmp/qc_eval_output.json
           if-no-files-found: warn
 

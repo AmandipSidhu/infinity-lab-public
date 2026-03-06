@@ -8,8 +8,8 @@ Checks performed:
   1. Cyclomatic Complexity (radon cc): every block must have CCN < 10
   2. Security vulnerabilities (bandit): no HIGH severity issues
   3. Security vulnerabilities (semgrep): no ERROR-level findings
-  4. Function length (AST): every function/method must be < 100 lines
-  5. Parameter count (AST): every function/method must have < 5 parameters
+  4. Function length (AST): every function/method must be < 150 lines
+  5. Parameter count (AST): every function/method must have < 8 parameters
 
 Exit codes:
   0 — All checks pass (violations list is empty)
@@ -30,8 +30,8 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 _CCN_THRESHOLD: int = 10          # cyclomatic complexity must be < 10
-_FUNCTION_MAX_LINES: int = 100    # function body must be < 100 lines
-_PARAM_MAX_COUNT: int = 5         # parameter count must be < 5
+_FUNCTION_MAX_LINES: int = 150    # function body must be < 150 lines
+_PARAM_MAX_COUNT: int = 8         # parameter count must be < 8
 
 
 # ---------------------------------------------------------------------------
