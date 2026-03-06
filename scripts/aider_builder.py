@@ -36,6 +36,7 @@ _PROGRESSIVE_DEGRADATION_WINDOW: int = 5
 _MIN_TEST_PASS_RATE_TIER3: float = 0.70
 _BACKOFF_BASE_SECONDS: float = 2.0
 _BACKOFF_CAP_SECONDS: float = 60.0
+_MIN_STRATEGY_LINES: int = 20
 
 _TIER1_MODEL: str = "anthropic/claude-3-5-sonnet-20241022"
 _TIER2_MODEL: str = "gemini/gemini-2.0-flash-exp"
@@ -122,6 +123,12 @@ def _commit_and_push(spec_name: str, tier: int, model: str) -> None:
         raise FileNotFoundError(
             f"[aider_builder] Strategy file not written by Aider: {strategy_file}. "
             "Aider exited 0 but produced no output file."
+        )
+    actual_lines = len(strategy_path.read_text(encoding="utf-8").splitlines())
+    if actual_lines < _MIN_STRATEGY_LINES:
+        raise FileNotFoundError(
+            f"[aider_builder] Strategy file has only {actual_lines} lines "
+            f"(minimum: {_MIN_STRATEGY_LINES}). Aider did not fill the stub."
         )
     subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
     subprocess.run(
