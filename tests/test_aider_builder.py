@@ -281,8 +281,11 @@ class TestCommitAndPush:
         m.returncode = returncode
         return m
 
-    def test_commits_and_pushes_when_diff_is_nonempty(self) -> None:
+    def test_commits_and_pushes_when_diff_is_nonempty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """When git diff --cached --quiet exits non-zero (changes staged), commit and push."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "strategies").mkdir()
+        (tmp_path / "strategies" / "my_strat.py").write_text("# stub\n")
         with patch("aider_builder.subprocess.run") as mock_run:
             mock_run.return_value = self._make_run(1)  # diff exit 1 → changes present
             _commit_and_push("my_strat", 1, "some-model")
@@ -298,8 +301,11 @@ class TestCommitAndPush:
         push_cmds = [c for c in cmds if c == ["git", "push"]]
         assert len(push_cmds) == 1
 
-    def test_skips_commit_when_no_staged_changes(self) -> None:
+    def test_skips_commit_when_no_staged_changes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """When git diff --cached --quiet exits 0 (nothing staged), skip commit and push."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "strategies").mkdir()
+        (tmp_path / "strategies" / "my_strat.py").write_text("# stub\n")
         with patch("aider_builder.subprocess.run") as mock_run:
             mock_run.return_value = self._make_run(0)  # diff exit 0 → no changes
             _commit_and_push("my_strat", 2, "other-model")
@@ -311,8 +317,11 @@ class TestCommitAndPush:
         assert len(commit_cmds) == 0
         assert len(push_cmds) == 0
 
-    def test_commit_message_format(self) -> None:
+    def test_commit_message_format(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Commit message follows the required format."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "strategies").mkdir()
+        (tmp_path / "strategies" / "vwap_probe.py").write_text("# stub\n")
         with patch("aider_builder.subprocess.run") as mock_run:
             mock_run.return_value = self._make_run(1)
             _commit_and_push("vwap_probe", 3, "openai/gpt-4o")
@@ -324,10 +333,58 @@ class TestCommitAndPush:
         msg = commit_cmds[0][-1]
         assert msg == "feat(strategies): aider build vwap_probe via tier 3 (openai/gpt-4o)"
 
+    def test_raises_file_not_found_when_strategy_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """FileNotFoundError is raised when strategy file does not exist after Aider exits 0."""
+        monkeypatch.chdir(tmp_path)
+        # Deliberately do NOT create strategies/my_strat.py
+        with patch("aider_builder.subprocess.run"):
+            with pytest.raises(FileNotFoundError, match="Strategy file not written by Aider"):
+                _commit_and_push("my_strat", 1, "some-model")
+
 
 # ---------------------------------------------------------------------------
-# run_tier_1
+# run_tier_1 file_not_written escalation
 # ---------------------------------------------------------------------------
+
+
+class TestTierFileNotWritten:
+    """Tests that verify file_not_written escalation in all four tier runners."""
+
+    def test_tier1_escalates_on_file_not_written(self) -> None:
+        """Tier 1: when _commit_and_push raises FileNotFoundError, returns failure result."""
+        with patch("aider_builder._run_aider", return_value=_ok()), \
+             patch("aider_builder._commit_and_push", side_effect=FileNotFoundError("no file")):
+            result = run_tier_1(VALID_SPEC, "valid_001")
+        assert result.success is False
+        assert result.tier == 1
+        assert result.escalation_reason == "file_not_written"
+
+    def test_tier2_escalates_on_file_not_written(self) -> None:
+        """Tier 2: when _commit_and_push raises FileNotFoundError, returns failure result."""
+        with patch("aider_builder._run_aider", return_value=_ok()), \
+             patch("aider_builder._commit_and_push", side_effect=FileNotFoundError("no file")):
+            result = run_tier_2(VALID_SPEC, "valid_001")
+        assert result.success is False
+        assert result.tier == 2
+        assert result.escalation_reason == "file_not_written"
+
+    def test_tier3_escalates_on_file_not_written(self) -> None:
+        """Tier 3: when _commit_and_push raises FileNotFoundError, returns failure result."""
+        with patch("aider_builder._run_aider", return_value=_ok()), \
+             patch("aider_builder._commit_and_push", side_effect=FileNotFoundError("no file")):
+            result = run_tier_3(VALID_SPEC, "valid_001")
+        assert result.success is False
+        assert result.tier == 3
+        assert result.escalation_reason == "file_not_written"
+
+    def test_tier4_escalates_on_file_not_written(self) -> None:
+        """Tier 4: when _commit_and_push raises FileNotFoundError, returns failure result."""
+        with patch("aider_builder._run_aider", return_value=_ok()), \
+             patch("aider_builder._commit_and_push", side_effect=FileNotFoundError("no file")):
+            result = run_tier_4(VALID_SPEC, "valid_001")
+        assert result.success is False
+        assert result.tier == 4
+        assert result.escalation_reason == "file_not_written"
 
 
 class TestRunTier1:
@@ -596,6 +653,32 @@ class TestBuild:
         assert call_args[2] == _TIER3_MODEL  # model_used
         assert call_args[3] == 3  # tiers_attempted
         assert call_args[5] is True
+
+    def test_stub_files_created_before_tier_runs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """build() pre-creates stub files for strategy and test before any tier runs."""
+        monkeypatch.chdir(tmp_path)
+        with patch("aider_builder.run_tier_1") as mock_t1, \
+             patch("aider_builder._write_step_summary"):
+            mock_t1.return_value = TierRunResult(True, 1, _TIER1_MODEL, 1, "", "ok")
+            build(str(VALID_SPEC))
+        # After build(), the stub files should have been created (or existed already)
+        assert (tmp_path / "strategies" / "valid_001.py").exists()
+        assert (tmp_path / "tests" / "test_valid_001.py").exists()
+
+    def test_stub_files_not_overwritten_if_existing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """build() does not overwrite existing strategy/test files."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "strategies").mkdir()
+        (tmp_path / "tests").mkdir()
+        existing_content = "# existing implementation\n"
+        (tmp_path / "strategies" / "valid_001.py").write_text(existing_content)
+        (tmp_path / "tests" / "test_valid_001.py").write_text(existing_content)
+        with patch("aider_builder.run_tier_1") as mock_t1, \
+             patch("aider_builder._write_step_summary"):
+            mock_t1.return_value = TierRunResult(True, 1, _TIER1_MODEL, 1, "", "ok")
+            build(str(VALID_SPEC))
+        assert (tmp_path / "strategies" / "valid_001.py").read_text() == existing_content
+        assert (tmp_path / "tests" / "test_valid_001.py").read_text() == existing_content
 
     def test_missing_spec_file_returns_false(self) -> None:
         result = build("/nonexistent/path/to/spec.yaml")
