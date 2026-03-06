@@ -175,7 +175,12 @@ def _get_next_version(
     """
     try:
         body = _qc_get("projects/read", user_id, api_token)
-    except RuntimeError:
+    except RuntimeError as exc:
+        print(
+            f"[qc_promote] WARNING: Could not read existing projects ({exc}); "
+            "defaulting to version 1.",
+            file=sys.stderr,
+        )
         return 1
 
     projects: list[dict[str, Any]] = body.get("projects", [])

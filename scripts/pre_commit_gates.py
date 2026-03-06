@@ -467,6 +467,21 @@ def check_stub_detection(strategy_file: Path) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _gate_summary(gate_violations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return a per-gate summary dict from a list of gate violations."""
+    gate_errors = [v for v in gate_violations if v.get("severity") == "ERROR"]
+    return {
+        "result": "FAIL" if gate_errors else "PASS",
+        "violation_count": len(gate_violations),
+        "violations": gate_violations,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -483,9 +498,6 @@ def run_gates(strategy_file: Path) -> dict[str, Any]:
     fn_length_violations = [
         v for v in ast_violations if v.get("check") == "ast_function_length"
     ]
-    param_count_violations = [
-        v for v in ast_violations if v.get("check") == "ast_param_count"
-    ]
 
     all_violations: list[dict[str, Any]] = (
         ccn_violations
@@ -497,14 +509,6 @@ def run_gates(strategy_file: Path) -> dict[str, Any]:
 
     errors = [v for v in all_violations if v.get("severity") == "ERROR"]
 
-    def _gate_result(gate_violations: list[dict[str, Any]]) -> dict[str, Any]:
-        gate_errors = [v for v in gate_violations if v.get("severity") == "ERROR"]
-        return {
-            "result": "FAIL" if gate_errors else "PASS",
-            "violation_count": len(gate_violations),
-            "violations": gate_violations,
-        }
-
     return {
         "strategy_file": str(strategy_file),
         "result": "FAIL" if errors else "PASS",
@@ -512,11 +516,11 @@ def run_gates(strategy_file: Path) -> dict[str, Any]:
         "error_count": len(errors),
         "violations": all_violations,
         "gates": {
-            "ccn_check": _gate_result(ccn_violations),
-            "bandit": _gate_result(bandit_violations),
-            "semgrep": _gate_result(semgrep_violations),
-            "function_length": _gate_result(fn_length_violations),
-            "stub_detection": _gate_result(stub_violations),
+            "ccn_check": _gate_summary(ccn_violations),
+            "bandit": _gate_summary(bandit_violations),
+            "semgrep": _gate_summary(semgrep_violations),
+            "function_length": _gate_summary(fn_length_violations),
+            "stub_detection": _gate_summary(stub_violations),
         },
     }
 
