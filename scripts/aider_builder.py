@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Aider Builder — 4-tier model escalation chain for the ACB pipeline.
 
-Tier ladder (cheapest-first, all free until Tier 4):
-  Tier 1 — gemini/gemini-2.5-flash          (Google AI Studio free, 500 RPD)
-  Tier 2 — gemini/gemini-2.5-flash-lite     (Google AI Studio free, separate quota)
+Tier ladder (cheapest-first, all Gemini / Google AI Studio):
+  Tier 1 — gemini/gemini-2.5-flash          (free tier, 500 RPD, thinking OFF)
+  Tier 2 — gemini/gemini-2.5-flash-lite     (free tier, separate quota pool)
   Tier 3 — gemini/gemini-2.5-flash          (thinking budget ON, reasoning mode)
-  Tier 4 — anthropic/claude-opus-4-5        (paid, nuclear option)
+  Tier 4 — gemini/gemini-2.5-pro            (paid, nuclear option)
 
 Exit codes:
   0 — Build succeeded
@@ -49,14 +49,16 @@ _TIER2_MODEL: str = "gemini/gemini-2.5-flash-lite"
 # Tier 3: Gemini 2.5 Flash with thinking budget — reasoning mode, still free tier
 _TIER3_MODEL: str = "gemini/gemini-2.5-flash"
 _TIER3_THINKING_BUDGET: int = 8192  # tokens allocated to thinking chain
-# Tier 4: Claude Opus 4.5 — paid, final escalation
-_TIER4_MODEL: str = "anthropic/claude-opus-4-5"
+# Tier 4: Gemini 2.5 Pro — paid, final escalation (replaces Opus; GEMINI_API_KEY already in CI)
+_TIER4_MODEL: str = "gemini/gemini-2.5-pro"
 
 # Subprocess timeout (seconds) for free-tier calls.
 _TIER1_SUBPROCESS_TIMEOUT: int = 60
 _TIER2_SUBPROCESS_TIMEOUT: int = 60
 # Tier 3 uses thinking — allow more wall time.
 _TIER3_SUBPROCESS_TIMEOUT: int = 120
+# Tier 4 uses Pro — slower, allow more wall time.
+_TIER4_SUBPROCESS_TIMEOUT: int = 180
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +118,7 @@ def _build_aider_cmd(
         "--yes",
         "--no-git",
         "--read", "config/aider_system_prompt_with_tools.txt",
-        "--mcp-config", "config/qc_tools_manifest.json",
+        "--read", "config/qc_tools_manifest.json",
         "--message", prompt,
         strategy_file,
         test_file,
@@ -492,17 +494,20 @@ def run_tier_3(spec_file: Path, spec_name: str) -> TierRunResult:
 
 
 def run_tier_4(spec_file: Path, spec_name: str) -> TierRunResult:
-    """Tier 4 — Claude Opus 4.5 (paid, nuclear option).
+    """Tier 4 — Gemini 2.5 Pro (paid, nuclear option).
 
-    Final boss: no further escalation. On failure after all iterations
-    the caller writes a diagnostic to GITHUB_STEP_SUMMARY and falls back
-    to the stub generator.
+    Final boss: no further escalation. Uses GEMINI_API_KEY already present in CI.
+    On failure after all iterations the caller writes a diagnostic to
+    GITHUB_STEP_SUMMARY and falls back to the stub generator.
     """
     model = _TIER4_MODEL
     last_output = ""
 
     for iteration in range(_MAX_ITERATIONS):
-        result = _run_aider(model, spec_file, spec_name, timeout=None)
+        try:
+            result = _run_aider(model, spec_file, spec_name, timeout=_TIER4_SUBPROCESS_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return TierRunResult(False, 4, model, iteration + 1, "timeout", last_output)
         last_output = result.stdout + result.stderr
 
         if result.success:
