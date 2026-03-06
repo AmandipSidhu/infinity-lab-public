@@ -92,7 +92,7 @@ class TierRunResult:
 
 def _build_aider_prompt(spec_file: Path, spec_name: str) -> str:
     return (
-        f"Read the spec file at {spec_file} and implement a QuantConnect LEAN algorithm "
+        f"Read the spec file at {spec_file} and CREATE a new QuantConnect LEAN algorithm "
         f"in strategies/{spec_name}.py that satisfies all acceptance_criteria defined in the spec. "
         f"Also write comprehensive unit tests in tests/test_{spec_name}.py. "
         f"Do NOT modify any files outside the strategies/ and tests/ directories."
@@ -663,10 +663,8 @@ def build(spec_file_str: str) -> bool:
     Path("strategies").mkdir(exist_ok=True)
     Path("tests").mkdir(exist_ok=True)
 
-    strategy_stub = Path("strategies") / f"{spec_name}.py"
+    # Only pre-create the test stub — Aider needs an edit target for tests
     test_stub = Path("tests") / f"test_{spec_name}.py"
-    if not strategy_stub.exists():
-        strategy_stub.write_text(f'"""Strategy stub for {spec_name}."""\n', encoding="utf-8")
     if not test_stub.exists():
         test_stub.write_text(f'"""Test stub for {spec_name}."""\n', encoding="utf-8")
 
