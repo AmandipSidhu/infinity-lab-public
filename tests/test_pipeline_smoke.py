@@ -332,7 +332,7 @@ class TestStrictModeSecretValidation:
         script = (
             "MISSING=(); "
             "for var in SLACK_BOT_TOKEN SLACK_ACK_CHANNEL_ID GEMINI_API_KEY "
-            "OPENAI_API_KEY ANTHROPIC_API_KEY QC_USER_ID QC_API_TOKEN; do "
+            "OPENAI_API_KEY QC_USER_ID QC_API_TOKEN; do "
             '  if [ -z "${!var:-}" ]; then MISSING+=("$var"); fi; '
             "done; "
             'if [ ${#MISSING[@]} -gt 0 ]; then '

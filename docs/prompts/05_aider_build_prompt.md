@@ -58,7 +58,7 @@ Attempt tiers in order. Move to next tier on the trigger conditions listed.
 
 ### Tier 4 — Claude Opus 4.5 (final boss)
 - `--model claude-opus-4.5`
-- `ANTHROPIC_API_KEY` env var
+- `ANTHROPIC_API_KEY` env var — **not stored in GitHub secrets; supply locally with your own key**
 - Max iterations: 30
 - On failure: post diagnostic summary to `$GITHUB_STEP_SUMMARY` and exit 1 — manual intervention required
 
@@ -92,7 +92,7 @@ Add these to the workflow step env block. All secrets must already exist in repo
 | `GEMINI_API_KEY` | 1 | Already present (used in strategy_reviewer step) |
 | `GITHUB_TOKEN` | 2 | Auto-provided by Actions — no secret needed |
 | `OPENAI_API_KEY` | 3 | GPT-5 access |
-| `ANTHROPIC_API_KEY` | 4 | Claude Opus 4.5 access |
+| `ANTHROPIC_API_KEY` | 4 | Claude Opus 4.5 access — **not stored in GitHub secrets; must be supplied locally** |
 
 ---
 
@@ -106,7 +106,6 @@ Replace the existing `Pipeline complete` step with:
   env:
     GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   run: |
     python scripts/aider_builder.py \

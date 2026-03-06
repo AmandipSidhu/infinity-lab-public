@@ -208,6 +208,7 @@ def _call_anthropic(model_name: str, spec_yaml: str) -> str:
     """Call Anthropic Claude via the anthropic SDK. Returns raw text."""
     import anthropic  # type: ignore[import-untyped]
 
+    # ANTHROPIC_API_KEY removed from CI — run locally with your own key
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise EnvironmentError("ANTHROPIC_API_KEY is not set")

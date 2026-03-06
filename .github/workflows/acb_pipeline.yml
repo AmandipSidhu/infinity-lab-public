@@ -102,13 +102,12 @@ jobs:
           SLACK_ACK_CHANNEL_ID: ${{ secrets.SLACK_ACK_CHANNEL_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
           QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
         run: |
           set -euo pipefail
           MISSING=()
-          for var in SLACK_BOT_TOKEN SLACK_ACK_CHANNEL_ID GEMINI_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY QC_USER_ID QC_API_TOKEN; do
+          for var in SLACK_BOT_TOKEN SLACK_ACK_CHANNEL_ID GEMINI_API_KEY OPENAI_API_KEY QC_USER_ID QC_API_TOKEN; do
             if [ -z "${!var:-}" ]; then
               MISSING+=("$var")
             fi
@@ -332,7 +331,6 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python scripts/aider_builder.py \
