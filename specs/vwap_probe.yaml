@@ -64,4 +64,4 @@ notes: |
     4. pre_commit_gates passes or surfaces clear fixable errors
     5. qc_upload_eval runs (stub or real) without crash
   If all 5 pass -> proceed to full vwap-mean-reversion-mes-tqqq.yaml.
-  # retriggered: 2026-03-05 after PR #57 (aider_builder commit/push fix)
+  # retriggered: 2026-03-05T17:38 PST after PR #59 (pre_commit_gates threshold fix)
