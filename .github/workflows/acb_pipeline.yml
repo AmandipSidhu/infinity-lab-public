@@ -88,20 +88,6 @@ jobs:
       matrix:
         spec_file: ${{ fromJson(needs.detect-specs.outputs.matrix_specs) }}
 
-    # MCP service container for QuantConnect automated backtesting (Step 6).
-    # NOTE: quantconnect/mcp-server is a placeholder image pending official
-    # availability. When the official image is published, replace this with
-    # the correct image name. If the service fails to start, qc_upload_eval.py
-    # will fall back to a stub result (exit 0, non-blocking).
-    services:
-      quantconnect-mcp:
-        image: quantconnect/mcp-server:latest
-        ports:
-          - 8000:8000
-        env:
-          QC_USER_ID: ${{ secrets.QC_USER_ID }}
-          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
-
     steps:
       - name: Checkout repository
         id: checkout
@@ -155,6 +141,10 @@ jobs:
       - name: Install dependencies
         id: install-deps
         run: python -m pip install -r requirements.txt -c constraints.txt
+
+      - name: Install lean-cli
+        id: install-lean
+        run: python -m pip install lean
 
       - name: Verify dependencies
         id: verify-deps
@@ -354,6 +344,39 @@ jobs:
         run: |
           SPEC_NAME=$(python -c "import pathlib; print(pathlib.Path('${{ matrix.spec_file }}').stem)")
           echo "spec_name=${SPEC_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Lean local backtest
+        id: lean-backtest
+        if: steps.aider-build.outcome == 'success'
+        shell: bash
+        run: |
+          set +e
+          lean backtest "strategies/${{ steps.spec-name.outputs.spec_name }}" \
+            --output /tmp/lean_backtest_output 2>&1 | tee /tmp/lean_backtest.log
+          LEAN_EXIT=${PIPESTATUS[0]}
+          if [ $LEAN_EXIT -eq 0 ]; then
+            RESULT_FILE=$(find /tmp/lean_backtest_output -name "*.json" -not -name "*order-events*" | head -1)
+            if [ -n "$RESULT_FILE" ]; then
+              cp "$RESULT_FILE" /tmp/backtest_result.json
+            else
+              echo '{"status":"success","output_missing":true}' > /tmp/backtest_result.json
+            fi
+          else
+            echo "::warning::Lean backtest exited with code $LEAN_EXIT — see log below."
+            echo "## Lean Backtest Error" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -50 /tmp/lean_backtest.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo '{"status":"failed","exit_code":'"$LEAN_EXIT"'}' > /tmp/backtest_result.json
+          fi
+
+      - name: Upload lean backtest result
+        if: steps.aider-build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lean-backtest-result-${{ steps.spec-name.outputs.spec_name }}
+          path: /tmp/backtest_result.json
+          if-no-files-found: warn
 
       - name: Pre-commit quality gates
         id: pre-commit-gates
