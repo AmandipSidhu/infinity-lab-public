@@ -667,14 +667,14 @@ class TestBuild:
         assert call_args[5] is True
 
     def test_stub_files_created_before_tier_runs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """build() pre-creates stub files for strategy and test before any tier runs."""
+        """build() pre-creates the test stub before any tier runs; strategy file is NOT pre-created."""
         monkeypatch.chdir(tmp_path)
         with patch("aider_builder.run_tier_1") as mock_t1, \
              patch("aider_builder._write_step_summary"):
             mock_t1.return_value = TierRunResult(True, 1, _TIER1_MODEL, 1, "", "ok")
             build(str(VALID_SPEC))
-        # After build(), the stub files should have been created (or existed already)
-        assert (tmp_path / "strategies" / "valid_001.py").exists()
+        # Only the test stub should be pre-created; Aider creates the strategy file itself
+        assert not (tmp_path / "strategies" / "valid_001.py").exists()
         assert (tmp_path / "tests" / "test_valid_001.py").exists()
 
     def test_stub_files_not_overwritten_if_existing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
