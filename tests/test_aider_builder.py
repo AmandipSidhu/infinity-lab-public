@@ -601,7 +601,8 @@ class TestRunTier4:
 
 
 class TestBuild:
-    def test_success_on_tier_1(self, tmp_path: Path) -> None:
+    def test_success_on_tier_1(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
         with patch("aider_builder.run_tier_1") as mock_t1, \
              patch("aider_builder._write_step_summary") as mock_summary:
             mock_t1.return_value = TierRunResult(True, 1, _TIER1_MODEL, 2, "", "ok")
@@ -612,9 +613,10 @@ class TestBuild:
         call_args = mock_summary.call_args[0]
         assert call_args[5] is True  # success=True
 
-    def test_escalates_through_all_tiers_to_failure(self, tmp_path: Path) -> None:
+    def test_escalates_through_all_tiers_to_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # FIXED: when all 4 tiers fail, build() now writes a stub strategy and
         # returns True so downstream steps are not blocked.
+        monkeypatch.chdir(tmp_path)
         fail_result_1 = TierRunResult(False, 1, _TIER1_MODEL, 30, "rate_limit", "")
         fail_result_2 = TierRunResult(False, 2, _TIER2_MODEL, 30, "daily_limit", "")
         fail_result_3 = TierRunResult(False, 3, _TIER3_MODEL, 30, "stuck_pattern", "")
@@ -637,7 +639,8 @@ class TestBuild:
         call_args = mock_summary.call_args[0]
         assert call_args[5] is True  # success=True (stub counts as success)
 
-    def test_success_on_tier_3(self) -> None:
+    def test_success_on_tier_3(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
         fail_result_1 = TierRunResult(False, 1, _TIER1_MODEL, 5, "timeout", "")
         fail_result_2 = TierRunResult(False, 2, _TIER2_MODEL, 10, "api_unavailable", "")
         ok_result_3 = TierRunResult(True, 3, _TIER3_MODEL, 3, "", "success output")
@@ -684,7 +687,8 @@ class TestBuild:
         result = build("/nonexistent/path/to/spec.yaml")
         assert result is False
 
-    def test_total_iterations_accumulated(self) -> None:
+    def test_total_iterations_accumulated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
         fail_1 = TierRunResult(False, 1, _TIER1_MODEL, 7, "rate_limit", "")
         ok_2 = TierRunResult(True, 2, _TIER2_MODEL, 3, "", "ok")
 
