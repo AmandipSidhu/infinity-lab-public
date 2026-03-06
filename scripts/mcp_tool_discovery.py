@@ -5,7 +5,7 @@ Connects to the running lean-cli/QC MCP environment (if available) and
 enumerates all available tools.  Falls back to a built-in static list of
 the full QuantConnect API tool catalogue when the server is not reachable.
 
-Converts MCP ``inputSchema`` format → Claude API ``input_schema`` format and
+Converts MCP ``inputSchema`` format → LLM tool-calling ``input_schema`` format and
 categorises tools into: ``syntax``, ``validation``, ``project``, ``backtest``,
 ``compile``, ``search``.
 
@@ -125,7 +125,7 @@ _TOOL_TO_CATEGORY: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Static built-in tool catalogue (Claude API function-calling format)
+# Static built-in tool catalogue (LLM tool-calling function format)
 # ---------------------------------------------------------------------------
 
 _STATIC_TOOLS: list[dict[str, Any]] = [
@@ -958,10 +958,11 @@ def _fetch_live_tools(mcp_url: str) -> list[dict[str, Any]] | None:
 
 
 def _convert_mcp_tool(mcp_tool: dict[str, Any]) -> dict[str, Any]:
-    """Convert a single MCP tool definition to Claude API function-calling format.
+    """Convert a single MCP tool definition to LLM tool-calling format.
 
-    MCP uses ``inputSchema`` (camelCase); Claude API uses ``input_schema``
-    (snake_case).  All other fields are passed through unchanged.
+    MCP uses ``inputSchema`` (camelCase); the tool-calling format uses
+    ``input_schema`` (snake_case).  All other fields are passed through
+    unchanged.
     """
     return {
         "name": mcp_tool.get("name", ""),
@@ -999,7 +1000,7 @@ def _categorise_tools(tools: list[dict[str, Any]]) -> dict[str, list[str]]:
 
 
 def build_manifest(tools: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build the full manifest dict from a list of Claude-format tool defs."""
+    """Build the full manifest dict from a list of tool definitions."""
     return {
         "tools": tools,
         "total_count": len(tools),
@@ -1046,7 +1047,7 @@ def main(argv: list[str] | None = None) -> int:
     Returns 0 on success, 1 on manifest failure, 2 on argument error.
     """
     parser = argparse.ArgumentParser(
-        description="Generate the QC MCP tools manifest for use with Aider/Claude."
+        description="Generate the QC MCP tools manifest for use with Aider."
     )
     parser.add_argument(
         "--output",
