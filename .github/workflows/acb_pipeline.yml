@@ -325,6 +325,28 @@ jobs:
                   s.write("No warnings — strategy review passed cleanly.\n")
           PYEOF
 
+      - name: Generate MCP tool manifest
+        id: mcp-tool-discovery
+        if: steps.validate.outcome == 'success' && steps.validate-secrets.outputs.secrets_ok == 'true'
+        env:
+          QC_MCP_BASE_URL: ${{ vars.QC_MCP_BASE_URL || '' }}
+        run: |
+          python scripts/mcp_tool_discovery.py --output config/qc_tools_manifest.json
+          python - <<'PYEOF'
+          import json, sys
+          try:
+              with open("config/qc_tools_manifest.json", encoding="utf-8") as f:
+                  manifest = json.load(f)
+          except (FileNotFoundError, json.JSONDecodeError) as e:
+              print(f"[mcp-tool-discovery] ERROR: manifest missing or malformed: {e}", file=sys.stderr)
+              sys.exit(1)
+          total = manifest.get("total_count", 0)
+          if total < 1:
+              print(f"[mcp-tool-discovery] ERROR: manifest total_count={total} < 1", file=sys.stderr)
+              sys.exit(1)
+          print(f"[mcp-tool-discovery] Manifest validated: {total} tools across {len(manifest.get('categories', {}))} categories.")
+          PYEOF
+
       - name: Aider build
         id: aider-build
         if: steps.validate.outcome == 'success' && steps.validate-secrets.outputs.secrets_ok == 'true'
@@ -560,6 +582,7 @@ jobs:
               ("notify-validation-failure",  "Notify Slack on validation failure",     "${{ steps.notify-validation-failure.outcome }}"),
               ("review",                     "Review strategy",                        "${{ steps.review.outcome }}"),
               ("evaluate",                   "Post reviewer results",                  "${{ steps.evaluate.outcome }}"),
+              ("mcp-tool-discovery",         "Generate MCP tool manifest",             "${{ steps.mcp-tool-discovery.outcome }}"),
               ("aider-build",                "Aider build",                            "${{ steps.aider-build.outcome }}"),
               ("spec-name",                  "Compute spec name",                      "${{ steps.spec-name.outcome }}"),
               ("pre-commit-gates",           "Pre-commit quality gates",               "${{ steps.pre-commit-gates.outcome }}"),
