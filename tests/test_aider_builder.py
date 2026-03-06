@@ -285,7 +285,7 @@ class TestCommitAndPush:
         """When git diff --cached --quiet exits non-zero (changes staged), commit and push."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "strategies").mkdir()
-        (tmp_path / "strategies" / "my_strat.py").write_text("# stub\n")
+        (tmp_path / "strategies" / "my_strat.py").write_text("\n".join(f"# line {i}" for i in range(20)) + "\n")
         with patch("aider_builder.subprocess.run") as mock_run:
             mock_run.return_value = self._make_run(1)  # diff exit 1 → changes present
             _commit_and_push("my_strat", 1, "some-model")
@@ -305,7 +305,7 @@ class TestCommitAndPush:
         """When git diff --cached --quiet exits 0 (nothing staged), skip commit and push."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "strategies").mkdir()
-        (tmp_path / "strategies" / "my_strat.py").write_text("# stub\n")
+        (tmp_path / "strategies" / "my_strat.py").write_text("\n".join(f"# line {i}" for i in range(20)) + "\n")
         with patch("aider_builder.subprocess.run") as mock_run:
             mock_run.return_value = self._make_run(0)  # diff exit 0 → no changes
             _commit_and_push("my_strat", 2, "other-model")
@@ -321,7 +321,7 @@ class TestCommitAndPush:
         """Commit message follows the required format."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "strategies").mkdir()
-        (tmp_path / "strategies" / "vwap_probe.py").write_text("# stub\n")
+        (tmp_path / "strategies" / "vwap_probe.py").write_text("\n".join(f"# line {i}" for i in range(20)) + "\n")
         with patch("aider_builder.subprocess.run") as mock_run:
             mock_run.return_value = self._make_run(1)
             _commit_and_push("vwap_probe", 3, "openai/gpt-4o")
@@ -339,6 +339,15 @@ class TestCommitAndPush:
         # Deliberately do NOT create strategies/my_strat.py
         with patch("aider_builder.subprocess.run"):
             with pytest.raises(FileNotFoundError, match="Strategy file not written by Aider"):
+                _commit_and_push("my_strat", 1, "some-model")
+
+    def test_raises_file_not_found_when_strategy_is_stub_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """FileNotFoundError is raised when strategy file exists but has fewer than 20 lines (stub-only)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "strategies").mkdir()
+        (tmp_path / "strategies" / "my_strat.py").write_text('"""Strategy stub for my_strat."""\n')
+        with patch("aider_builder.subprocess.run"):
+            with pytest.raises(FileNotFoundError, match="Aider did not fill the stub"):
                 _commit_and_push("my_strat", 1, "some-model")
 
 
