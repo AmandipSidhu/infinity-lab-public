@@ -234,6 +234,10 @@ class TestAiderBuilderHelpers:
         assert "--model" in cmd
         assert "gemini/gemini-2.5-flash" in cmd
         assert "--yes" in cmd
+        assert "--read" in cmd
+        assert "config/aider_system_prompt_with_tools.txt" in cmd
+        assert "--mcp-config" in cmd
+        assert "config/qc_tools_manifest.json" in cmd
         assert "strategies/my_strategy.py" in cmd
         assert "tests/test_my_strategy.py" in cmd
 

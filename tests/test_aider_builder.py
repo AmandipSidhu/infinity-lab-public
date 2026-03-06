@@ -53,6 +53,7 @@ from aider_builder import (  # noqa: E402
     _detect_syntax_error,
     _extract_error_fingerprint,
     _extract_test_pass_rate,
+    _read_backtest_metrics,
     _write_step_summary,
     build,
     main,
@@ -269,10 +270,71 @@ class TestWriteStepSummary:
             # Should not raise
             _write_step_summary("specs/x.yaml", "x", _TIER1_MODEL, 1, 1, True)
 
+    def test_backtest_metrics_appended_when_available(self, tmp_path: Path) -> None:
+        summary_file = tmp_path / "summary.md"
+        backtest_file = tmp_path / "backtest_result.json"
+        backtest_file.write_text(
+            '{"Statistics": {"SharpeRatio": "1.23", "Drawdown": "5.67%", "CompoundingAnnualReturn": "15.2%"}}',
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}), \
+             patch("aider_builder._read_backtest_metrics", return_value={"SharpeRatio": "1.23", "Drawdown": "5.67%", "CompoundingAnnualReturn": "15.2%"}):
+            _write_step_summary("specs/s.yaml", "s", _TIER1_MODEL, 1, 2, True)
+        content = summary_file.read_text(encoding="utf-8")
+        assert "Backtest Metrics" in content
+        assert "Sharpe Ratio" in content
+        assert "1.23" in content
+        assert "Drawdown" in content
+        assert "5.67%" in content
+
+    def test_backtest_metrics_absent_when_file_missing(self, tmp_path: Path) -> None:
+        summary_file = tmp_path / "summary.md"
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}), \
+             patch("aider_builder._read_backtest_metrics", return_value=None):
+            _write_step_summary("specs/s.yaml", "s", _TIER1_MODEL, 1, 2, True)
+        content = summary_file.read_text(encoding="utf-8")
+        assert "Backtest Metrics" not in content
+
 
 # ---------------------------------------------------------------------------
-# _commit_and_push
+# _read_backtest_metrics
 # ---------------------------------------------------------------------------
+
+
+class TestReadBacktestMetrics:
+    def test_reads_statistics_key(self, tmp_path: Path) -> None:
+        f = tmp_path / "backtest_result.json"
+        f.write_text('{"Statistics": {"SharpeRatio": "1.5", "Drawdown": "10%"}}', encoding="utf-8")
+        result = _read_backtest_metrics(str(f))
+        assert result is not None
+        assert result["SharpeRatio"] == "1.5"
+        assert result["Drawdown"] == "10%"
+
+    def test_reads_runtime_statistics_key(self, tmp_path: Path) -> None:
+        f = tmp_path / "backtest_result.json"
+        f.write_text('{"RuntimeStatistics": {"SharpeRatio": "0.9"}}', encoding="utf-8")
+        result = _read_backtest_metrics(str(f))
+        assert result is not None
+        assert result["SharpeRatio"] == "0.9"
+
+    def test_returns_none_when_file_missing(self) -> None:
+        result = _read_backtest_metrics("/nonexistent/path/backtest_result.json")
+        assert result is None
+
+    def test_returns_none_on_invalid_json(self, tmp_path: Path) -> None:
+        f = tmp_path / "backtest_result.json"
+        f.write_text("not valid json", encoding="utf-8")
+        result = _read_backtest_metrics(str(f))
+        assert result is None
+
+    def test_returns_none_when_stats_empty(self, tmp_path: Path) -> None:
+        f = tmp_path / "backtest_result.json"
+        f.write_text('{}', encoding="utf-8")
+        result = _read_backtest_metrics(str(f))
+        assert result is None
+
+
+
 
 
 class TestCommitAndPush:
@@ -623,8 +685,8 @@ class TestBuild:
         assert call_args[5] is True  # success=True
 
     def test_escalates_through_all_tiers_to_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # FIXED: when all 4 tiers fail, build() now writes a stub strategy and
-        # returns True so downstream steps are not blocked.
+        # When all 4 tiers fail, build() writes a stub strategy and returns False
+        # so CI fails visibly — no more hollow green runs.
         monkeypatch.chdir(tmp_path)
         fail_result_1 = TierRunResult(False, 1, _TIER1_MODEL, 30, "rate_limit", "")
         fail_result_2 = TierRunResult(False, 2, _TIER2_MODEL, 30, "daily_limit", "")
@@ -641,12 +703,12 @@ class TestBuild:
             mock_stub.return_value = Path("strategies/valid_001.py")
             result = build(str(VALID_SPEC))
 
-        assert result is True  # stub written → exits 0 so downstream steps run
+        assert result is False  # stub written → exits 1 so CI fails visibly
         mock_stub.assert_called_once()
         mock_cap.assert_called_once_with("valid_001", 4, _TIER4_MODEL)
         mock_summary.assert_called_once()
         call_args = mock_summary.call_args[0]
-        assert call_args[5] is True  # success=True (stub counts as success)
+        assert call_args[5] is False  # success=False (all tiers exhausted)
 
     def test_success_on_tier_3(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)

@@ -14,6 +14,7 @@ Exit codes:
 """
 
 import argparse
+import json
 import os
 import random
 import re
@@ -113,6 +114,8 @@ def _build_aider_cmd(
         "--model", model,
         "--yes",
         "--no-git",
+        "--read", "config/aider_system_prompt_with_tools.txt",
+        "--mcp-config", "config/qc_tools_manifest.json",
         "--message", prompt,
         strategy_file,
         test_file,
@@ -612,6 +615,37 @@ class {class_name}(QCAlgorithm):
 # ---------------------------------------------------------------------------
 
 
+def _read_backtest_metrics(backtest_result_path: str = "/tmp/backtest_result.json") -> dict | None:
+    """Read backtest metrics from the result JSON file, returning None if unavailable."""
+    try:
+        with open(backtest_result_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    stats: dict = {}
+    for sub_key in ("statistics", "Statistics", "runtimeStatistics", "RuntimeStatistics"):
+        sub = data.get(sub_key)
+        if isinstance(sub, dict):
+            stats.update(sub)
+    # Fall back to top-level keys when no recognised sub-key is present.
+    if not stats:
+        stats = data
+    return stats if stats else None
+
+
+def _first_present(metrics: dict, *keys: str) -> str | None:
+    """Return the first value in *metrics* whose key appears in *keys*, or None.
+
+    Uses explicit None checks so that valid falsy values (e.g. 0 or '0%') are
+    returned rather than skipped.
+    """
+    for key in keys:
+        val = metrics.get(key)
+        if val is not None:
+            return str(val)
+    return None
+
+
 def _write_step_summary(
     spec_file: str,
     spec_name: str,
@@ -637,6 +671,24 @@ def _write_step_summary(
     ]
     if not success and failure_details:
         lines.append(f"\n### Failure Diagnostic\n\n```\n{failure_details}\n```\n")
+    metrics = _read_backtest_metrics()
+    if metrics:
+        sharpe = _first_present(metrics, "SharpeRatio", "Sharpe Ratio", "sharpe_ratio")
+        total_return = _first_present(
+            metrics,
+            "TotalPerformance",
+            "Total Return",
+            "total_return",
+            "CompoundingAnnualReturn",
+            "Compounding Annual Return",
+        )
+        drawdown = _first_present(metrics, "Drawdown", "drawdown", "MaxDrawdown", "Maximum Drawdown")
+        lines.append("\n### Backtest Metrics\n\n")
+        lines.append("| Metric | Value |\n")
+        lines.append("|--------|-------|\n")
+        lines.append(f"| Sharpe Ratio | {sharpe if sharpe is not None else 'N/A'} |\n")
+        lines.append(f"| Total Return | {total_return if total_return is not None else 'N/A'} |\n")
+        lines.append(f"| Drawdown | {drawdown if drawdown is not None else 'N/A'} |\n")
     Path(summary_path).write_text("".join(lines), encoding="utf-8")
 
 
@@ -726,14 +778,14 @@ def build(spec_file_str: str) -> bool:
         last_model,
         4,
         total_iterations,
-        True,
+        False,
         failure_details=(
             "All 4 model tiers were exhausted. A minimal stub strategy was written.\n"
             f"Stub path: {stub_path}\n"
             "Replace with a real implementation before production use."
         ),
     )
-    return True
+    return False
 
 
 # ---------------------------------------------------------------------------
