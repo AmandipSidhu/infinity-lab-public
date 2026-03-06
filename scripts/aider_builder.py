@@ -117,6 +117,12 @@ def _commit_and_push(spec_name: str, tier: int, model: str) -> None:
     """
     strategy_file = f"strategies/{spec_name}.py"
     test_file = f"tests/test_{spec_name}.py"
+    strategy_path = Path(strategy_file)
+    if not strategy_path.exists():
+        raise FileNotFoundError(
+            f"[aider_builder] Strategy file not written by Aider: {strategy_file}. "
+            "Aider exited 0 but produced no output file."
+        )
     subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
     subprocess.run(
         ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"],
@@ -282,7 +288,10 @@ def run_tier_1(spec_file: Path, spec_name: str) -> TierRunResult:
         combined = result.stdout + result.stderr
 
         if result.success:
-            _commit_and_push(spec_name, 1, model)
+            try:
+                _commit_and_push(spec_name, 1, model)
+            except FileNotFoundError as exc:
+                return TierRunResult(False, 1, model, iteration + 1, "file_not_written", str(exc))
             return TierRunResult(True, 1, model, iteration + 1, "", combined)
 
         # Rate limit: backoff and retry; escalate after max retries.
@@ -341,7 +350,10 @@ def run_tier_2(spec_file: Path, spec_name: str) -> TierRunResult:
         combined = result.stdout + result.stderr
 
         if result.success:
-            _commit_and_push(spec_name, 2, model)
+            try:
+                _commit_and_push(spec_name, 2, model)
+            except FileNotFoundError as exc:
+                return TierRunResult(False, 2, model, iteration + 1, "file_not_written", str(exc))
             return TierRunResult(True, 2, model, iteration + 1, "", combined)
 
         if _detect_daily_limit(combined):
@@ -382,7 +394,10 @@ def run_tier_3(spec_file: Path, spec_name: str) -> TierRunResult:
         combined = result.stdout + result.stderr
 
         if result.success:
-            _commit_and_push(spec_name, 3, model)
+            try:
+                _commit_and_push(spec_name, 3, model)
+            except FileNotFoundError as exc:
+                return TierRunResult(False, 3, model, iteration + 1, "file_not_written", str(exc))
             return TierRunResult(True, 3, model, iteration + 1, "", combined)
 
         pass_rate = _extract_test_pass_rate(combined)
@@ -433,7 +448,10 @@ def run_tier_4(spec_file: Path, spec_name: str) -> TierRunResult:
         last_output = result.stdout + result.stderr
 
         if result.success:
-            _commit_and_push(spec_name, 4, model)
+            try:
+                _commit_and_push(spec_name, 4, model)
+            except FileNotFoundError as exc:
+                return TierRunResult(False, 4, model, iteration + 1, "file_not_written", str(exc))
             return TierRunResult(True, 4, model, iteration + 1, "", last_output)
 
     return TierRunResult(
@@ -595,6 +613,15 @@ def build(spec_file_str: str) -> bool:
     # Ensure target directories exist so aider can create the output files.
     Path("strategies").mkdir(exist_ok=True)
     Path("tests").mkdir(exist_ok=True)
+
+    # Pre-create stub files so Aider always has an existing file to edit
+    # (Aider edits existing files more reliably than creating new ones with --no-git).
+    strategy_stub = Path("strategies") / f"{spec_name}.py"
+    test_stub = Path("tests") / f"test_{spec_name}.py"
+    if not strategy_stub.exists():
+        strategy_stub.write_text(f'"""Strategy stub for {spec_name}."""\n', encoding="utf-8")
+    if not test_stub.exists():
+        test_stub.write_text(f'"""Test stub for {spec_name}."""\n', encoding="utf-8")
 
     metadata = spec_data.get("metadata", {})
     strategy_name = metadata.get("name", spec_name)
