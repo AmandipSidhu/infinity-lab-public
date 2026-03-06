@@ -10,6 +10,7 @@ Checks performed:
   3. Security vulnerabilities (semgrep): no ERROR-level findings
   4. Function length (AST): every function/method must be < 150 lines
   5. Parameter count (AST): every function/method must have < 8 parameters
+  6. Stub/placeholder detection (AST): no function may have a stub body
 
 Exit codes:
   0 — All checks pass (violations list is empty)
@@ -299,6 +300,173 @@ def check_ast(strategy_file: Path) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Check 6 — Stub/placeholder detection via AST
+# ---------------------------------------------------------------------------
+
+
+def check_stub_detection(strategy_file: Path) -> list[dict[str, Any]]:
+    """Parse the strategy file and flag functions whose bodies are stubs or placeholders.
+
+    A function body is treated as a stub when **all** of its statements match
+    at least one of the following patterns:
+
+    1. Bare ``pass`` statement.
+    2. ``raise NotImplementedError(...)`` call or name.
+    3. ``return None`` on a line that contains a ``# TODO`` or ``# FIXME`` comment.
+    4. A docstring expression with no real implementation.
+
+    Certain patterns are suppressed (allowed):
+
+    * Functions named ``__init__`` with a bare ``pass`` body.
+    * Functions defined directly inside an ``except`` handler.
+    * Functions defined inside a class that inherits from ``ABC`` or ``ABCMeta``.
+    """
+    violations: list[dict[str, Any]] = []
+
+    try:
+        source = strategy_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        violations.append({
+            "check": "ast_stub_detection",
+            "severity": "ERROR",
+            "message": f"Cannot read file: {exc}",
+            "file": str(strategy_file),
+        })
+        return violations
+
+    try:
+        tree = ast.parse(source, filename=str(strategy_file))
+    except SyntaxError as exc:
+        violations.append({
+            "check": "ast_stub_detection",
+            "severity": "ERROR",
+            "message": f"SyntaxError in strategy file: {exc}",
+            "file": str(strategy_file),
+        })
+        return violations
+
+    source_lines: list[str] = source.splitlines()
+
+    # Build a child→parent map so we can inspect enclosing nodes.
+    parent_map: dict[int, ast.AST] = {}
+    for parent_node in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent_node):
+            parent_map[id(child)] = parent_node
+
+    def _is_abc_class(class_node: ast.ClassDef) -> bool:
+        """Return True if *class_node* inherits directly from ABC or ABCMeta."""
+        for base in class_node.bases:
+            if isinstance(base, ast.Name) and base.id in ("ABC", "ABCMeta"):
+                return True
+            if isinstance(base, ast.Attribute) and base.attr in ("ABC", "ABCMeta"):
+                return True
+        return False
+
+    def _stmt_stub_type(stmt: ast.stmt) -> str | None:
+        """Return the stub_type string for *stmt*, or ``None`` if it is not a stub."""
+        # Pattern 1: bare pass
+        if isinstance(stmt, ast.Pass):
+            return "bare_pass"
+
+        # Pattern 2: raise NotImplementedError / raise NotImplementedError(...)
+        if isinstance(stmt, ast.Raise) and stmt.exc is not None:
+            exc = stmt.exc
+            if isinstance(exc, ast.Name) and exc.id == "NotImplementedError":
+                return "not_implemented"
+            if isinstance(exc, ast.Call):
+                func = exc.func
+                if isinstance(func, ast.Name) and func.id == "NotImplementedError":
+                    return "not_implemented"
+                if isinstance(func, ast.Attribute) and func.attr == "NotImplementedError":
+                    return "not_implemented"
+
+        # Pattern 3: return None on a line with a # TODO or # FIXME comment
+        if isinstance(stmt, ast.Return):
+            val = stmt.value
+            is_none = val is None or (
+                isinstance(val, ast.Constant) and val.value is None
+            )
+            if is_none:
+                line_idx = stmt.lineno - 1
+                if 0 <= line_idx < len(source_lines):
+                    line_lower = source_lines[line_idx].lower()
+                    if "# todo" in line_lower or "# fixme" in line_lower:
+                        return "return_none_todo"
+
+        # Pattern 4: docstring-only expression (string constant)
+        if (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Constant)
+            and isinstance(stmt.value.value, str)
+        ):
+            return "docstring_only"
+
+        return None
+
+    _reason_label: dict[str, str] = {
+        "bare_pass": "bare pass",
+        "not_implemented": "raise NotImplementedError",
+        "docstring_only": "docstring-only",
+        "return_none_todo": "return None TODO",
+    }
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+
+        func_name: str = node.name
+        start_line: int = node.lineno
+        body: list[ast.stmt] = node.body
+
+        # Allowlist: __init__ with a bare pass body is a valid empty constructor
+        if func_name == "__init__" and len(body) == 1 and isinstance(body[0], ast.Pass):
+            continue
+
+        # Allowlist: function defined directly inside an except handler
+        parent = parent_map.get(id(node))
+        if isinstance(parent, ast.ExceptHandler):
+            continue
+
+        # Allowlist: function defined inside an ABC / ABCMeta class
+        if isinstance(parent, ast.ClassDef) and _is_abc_class(parent):
+            continue
+
+        # Check whether every statement in the body matches a stub pattern.
+        stub_types: list[str] = []
+        all_match = True
+        for stmt in body:
+            stype = _stmt_stub_type(stmt)
+            if stype is None:
+                all_match = False
+                break
+            stub_types.append(stype)
+
+        if not all_match or not stub_types:
+            continue
+
+        # Primary type: prefer non-docstring stubs when mixed (e.g. docstring + pass).
+        primary_type = "docstring_only"
+        for stype in stub_types:
+            if stype != "docstring_only":
+                primary_type = stype
+                break
+
+        violations.append({
+            "check": "ast_stub_detection",
+            "severity": "ERROR",
+            "message": (
+                f"Function '{func_name}' at line {start_line} appears to be a stub "
+                f"({_reason_label[primary_type]})"
+            ),
+            "file": str(strategy_file),
+            "line": start_line,
+            "stub_type": primary_type,
+        })
+
+    return violations
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -311,6 +479,7 @@ def run_gates(strategy_file: Path) -> dict[str, Any]:
     violations.extend(check_bandit(strategy_file))
     violations.extend(check_semgrep(strategy_file))
     violations.extend(check_ast(strategy_file))
+    violations.extend(check_stub_detection(strategy_file))
 
     errors = [v for v in violations if v.get("severity") == "ERROR"]
     return {

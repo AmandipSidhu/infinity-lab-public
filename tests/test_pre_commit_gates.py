@@ -5,6 +5,7 @@ Covers:
 - check_bandit: parses bandit JSON output, flags HIGH severity issues
 - check_semgrep: parses semgrep JSON output, flags ERROR-level findings
 - check_ast: function length and parameter count via AST
+- check_stub_detection: stub/placeholder detection via AST
 - run_gates: integration of all checks
 - CLI: exit codes, JSON output, --output flag
 """
@@ -29,6 +30,7 @@ from pre_commit_gates import (  # noqa: E402
     check_bandit,
     check_cyclomatic_complexity,
     check_semgrep,
+    check_stub_detection,
     main,
     run_gates,
 )
@@ -309,6 +311,95 @@ class TestCheckAst:
         violations = check_ast(strategy)
         param_violations = [v for v in violations if v["check"] == "ast_param_count"]
         assert len(param_violations) == 1
+
+
+# ---------------------------------------------------------------------------
+# check_stub_detection
+# ---------------------------------------------------------------------------
+
+
+class TestCheckStubDetection:
+    def test_bare_pass_in_concrete_class_fails(self, tmp_path: Path) -> None:
+        """def process(self): pass in a non-except context → bare_pass violation."""
+        source = "class MyClass:\n    def process(self):\n        pass\n"
+        strategy = _make_strategy(tmp_path, source)
+        violations = check_stub_detection(strategy)
+        stub_v = [v for v in violations if v["check"] == "ast_stub_detection"]
+        assert len(stub_v) == 1
+        assert stub_v[0]["stub_type"] == "bare_pass"
+        assert "process" in stub_v[0]["message"]
+
+    def test_raise_not_implemented_in_concrete_class_fails(self, tmp_path: Path) -> None:
+        """def on_data(self, data): raise NotImplementedError() → not_implemented violation."""
+        source = "class MyClass:\n    def on_data(self, data):\n        raise NotImplementedError()\n"
+        strategy = _make_strategy(tmp_path, source)
+        violations = check_stub_detection(strategy)
+        stub_v = [v for v in violations if v["check"] == "ast_stub_detection"]
+        assert len(stub_v) == 1
+        assert stub_v[0]["stub_type"] == "not_implemented"
+        assert "on_data" in stub_v[0]["message"]
+
+    def test_docstring_only_body_fails(self, tmp_path: Path) -> None:
+        """def calculate(self): \"\"\"TODO\"\"\" → docstring_only violation."""
+        source = 'class MyClass:\n    def calculate(self):\n        """TODO"""\n'
+        strategy = _make_strategy(tmp_path, source)
+        violations = check_stub_detection(strategy)
+        stub_v = [v for v in violations if v["check"] == "ast_stub_detection"]
+        assert len(stub_v) == 1
+        assert stub_v[0]["stub_type"] == "docstring_only"
+        assert "calculate" in stub_v[0]["message"]
+
+    def test_return_none_todo_comment_fails(self, tmp_path: Path) -> None:
+        """def handle(self): return None  # TODO implement → return_none_todo violation."""
+        source = "class MyClass:\n    def handle(self):\n        return None  # TODO implement\n"
+        strategy = _make_strategy(tmp_path, source)
+        violations = check_stub_detection(strategy)
+        stub_v = [v for v in violations if v["check"] == "ast_stub_detection"]
+        assert len(stub_v) == 1
+        assert stub_v[0]["stub_type"] == "return_none_todo"
+        assert "handle" in stub_v[0]["message"]
+
+    def test_function_in_except_handler_is_suppressed(self, tmp_path: Path) -> None:
+        """A function defined inside an except block with pass body is suppressed."""
+        source = (
+            "try:\n"
+            "    risky()\n"
+            "except ValueError:\n"
+            "    def handle(): pass\n"
+        )
+        strategy = _make_strategy(tmp_path, source)
+        violations = check_stub_detection(strategy)
+        stub_v = [v for v in violations if v["check"] == "ast_stub_detection"]
+        assert stub_v == []
+
+    def test_init_with_pass_is_suppressed(self, tmp_path: Path) -> None:
+        """def __init__(self): pass is a valid empty constructor — suppressed."""
+        source = "class MyClass:\n    def __init__(self):\n        pass\n"
+        strategy = _make_strategy(tmp_path, source)
+        violations = check_stub_detection(strategy)
+        stub_v = [v for v in violations if v["check"] == "ast_stub_detection"]
+        assert stub_v == []
+
+    def test_abstract_method_in_abc_class_is_suppressed(self, tmp_path: Path) -> None:
+        """Methods in an ABC subclass with raise NotImplementedError are suppressed."""
+        source = (
+            "from abc import ABC\n"
+            "class MyABC(ABC):\n"
+            "    def compute(self):\n"
+            "        raise NotImplementedError\n"
+        )
+        strategy = _make_strategy(tmp_path, source)
+        violations = check_stub_detection(strategy)
+        stub_v = [v for v in violations if v["check"] == "ast_stub_detection"]
+        assert stub_v == []
+
+    def test_fully_implemented_function_passes(self, tmp_path: Path) -> None:
+        """A function with a real implementation produces no stub violation."""
+        source = "def add(a: int, b: int) -> int:\n    return a + b\n"
+        strategy = _make_strategy(tmp_path, source)
+        violations = check_stub_detection(strategy)
+        stub_v = [v for v in violations if v["check"] == "ast_stub_detection"]
+        assert stub_v == []
 
 
 # ---------------------------------------------------------------------------
