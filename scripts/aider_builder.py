@@ -113,6 +113,7 @@ def _build_aider_cmd(
         "--model", model,
         "--yes",
         "--no-git",
+        "--read", "config/aider_system_prompt_with_tools.txt",
         "--message", prompt,
         strategy_file,
         test_file,
