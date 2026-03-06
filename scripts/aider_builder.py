@@ -14,6 +14,7 @@ Exit codes:
 """
 
 import argparse
+import json
 import os
 import random
 import re
@@ -22,6 +23,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -114,6 +116,7 @@ def _build_aider_cmd(
         "--yes",
         "--no-git",
         "--read", "config/aider_system_prompt_with_tools.txt",
+        "--mcp-config", "config/qc_tools_manifest.json",
         "--message", prompt,
         strategy_file,
         test_file,
@@ -609,6 +612,48 @@ class {class_name}(QCAlgorithm):
 
 
 # ---------------------------------------------------------------------------
+# Backtest metrics reader
+# ---------------------------------------------------------------------------
+
+
+def _read_backtest_metrics(path: Path | None = None) -> dict[str, Any]:
+    """Read backtest metrics from /tmp/backtest_result.json.
+
+    Merges ``Statistics`` and ``RuntimeStatistics`` sub-keys with a top-level
+    fallback so callers get a single flat dict.  Explicit ``None`` checks are
+    used internally to avoid silently discarding ``0.0`` values (e.g. a Sharpe
+    Ratio of exactly zero).
+
+    Returns an empty dict when the file is missing or contains invalid JSON.
+
+    Args:
+        path: Override the default ``/tmp/backtest_result.json`` location.
+              Primarily used in tests to point at a temporary file.
+    """
+    if path is None:
+        path = Path("/tmp/backtest_result.json")
+    if not path.exists():
+        return {}
+    try:
+        data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+    merged: dict[str, Any] = {}
+    # Populate from sub-dicts first (Statistics, then RuntimeStatistics)
+    for sub_key in ("Statistics", "RuntimeStatistics"):
+        sub = data.get(sub_key)
+        if isinstance(sub, dict):
+            merged.update(sub)
+    # Top-level fallback: add keys not already populated from sub-dicts
+    for k, v in data.items():
+        if k not in ("Statistics", "RuntimeStatistics") and k not in merged:
+            merged[k] = v
+
+    return merged
+
+
+# ---------------------------------------------------------------------------
 # GITHUB_STEP_SUMMARY output
 # ---------------------------------------------------------------------------
 
@@ -638,6 +683,19 @@ def _write_step_summary(
     ]
     if not success and failure_details:
         lines.append(f"\n### Failure Diagnostic\n\n```\n{failure_details}\n```\n")
+    metrics = _read_backtest_metrics()
+    sharpe = metrics.get("Sharpe Ratio")
+    total_return = metrics.get("Total Return")
+    max_drawdown = metrics.get("Max Drawdown")
+    if sharpe is not None or total_return is not None or max_drawdown is not None:
+        lines.append("\n### Backtest Metrics\n\n")
+        lines.append("| Metric | Value |\n|--------|-------|\n")
+        if sharpe is not None:
+            lines.append(f"| Sharpe Ratio | {sharpe} |\n")
+        if total_return is not None:
+            lines.append(f"| Total Return | {total_return} |\n")
+        if max_drawdown is not None:
+            lines.append(f"| Max Drawdown | {max_drawdown} |\n")
     Path(summary_path).write_text("".join(lines), encoding="utf-8")
 
 
@@ -734,7 +792,7 @@ def build(spec_file_str: str) -> bool:
             "Replace with a real implementation before production use."
         ),
     )
-    return True
+    return False
 
 
 # ---------------------------------------------------------------------------
