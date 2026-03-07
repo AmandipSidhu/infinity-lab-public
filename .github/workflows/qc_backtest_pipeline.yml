@@ -1,0 +1,54 @@
+name: QC Backtest Pipeline
+
+on:
+  push:
+    paths:
+      - 'strategies/**/*.py'
+  workflow_dispatch:
+    inputs:
+      strategy_file:
+        description: 'Path to strategy file (e.g. strategies/reference/sma_crossover_simple.py)'
+        required: true
+
+jobs:
+  qc-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -c constraints.txt
+          pip install radon bandit
+
+      - name: Run quality gates
+        run: |
+          python scripts/pre_commit_gates.py \
+            --strategy ${{ inputs.strategy_file || 'strategies/reference/sma_crossover_simple.py' }} \
+            --output /tmp/pre_commit_gates.json
+
+      - name: Upload to QC and run backtest
+        env:
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+        run: |
+          python scripts/qc_rest_client.py \
+            --strategy ${{ inputs.strategy_file || 'strategies/reference/sma_crossover_simple.py' }} \
+            --qc-user-id $QC_USER_ID \
+            --qc-api-token $QC_API_TOKEN
+
+      - name: Upload backtest result as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-result
+          path: /tmp/backtest_result.json
+          if-no-files-found: error
