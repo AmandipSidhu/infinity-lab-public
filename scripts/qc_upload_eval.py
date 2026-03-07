@@ -1,35 +1,31 @@
 #!/usr/bin/env python3
 """QuantConnect Upload & Backtest Evaluation — Step 6 of the ACB Pipeline.
 
-This script uses the QuantConnect MCP server for automated CI backtesting.
+This script uses the QuantConnect REST API for automated CI backtesting.
 For manual live deployment after human review, see ``infinity-lab-private``.
 
-Uploads the built strategy to the QuantConnect MCP Server running on
-``QC_MCP_BASE_URL`` (default: ``http://localhost:8000/mcp``) via JSON-RPC 2.0
-HTTP requests, triggers a backtest, polls until completion, and evaluates the
-results against the FitnessTracker constraints defined in the strategy spec.
+Uploads the built strategy to QuantConnect via the REST API at
+``https://www.quantconnect.com/api/v2`` using HTTP Basic auth with a
+SHA-256 timestamp hash (same pattern as ``qc_promote.py``), triggers a
+backtest, polls until completion, and evaluates the results against the
+FitnessTracker constraints defined in the strategy spec.
 
 FitnessTracker constraints evaluated:
   - Sharpe Ratio >= 0.5 (hard minimum; spec may require higher)
   - Max Drawdown <= threshold from spec performance_targets
 
-The MCP server is expected to expose the following tools:
-  - create_project   (arguments: name) → {project_id}
-  - create_file      (arguments: project_id, name, content) → {file_id}
-  - create_backtest  (arguments: project_id, name) → {backtest_id}
-  - read_backtest    (arguments: project_id, backtest_id) → {statistics, ...}
-
 Stub fallback (exit 0, non-blocking):
-  - When ``QC_MCP_BASE_URL`` is not set in the environment
-  - When the MCP server is unreachable (connection error at startup)
+  - When ``QC_USER_ID`` or ``QC_API_TOKEN`` is not set in the environment
+  - When the QC REST API is unreachable (connection error at startup)
 
 Exit codes:
   0 — Backtest passed, evaluation completed, or stub fallback (non-blocking)
-  1 — Backtest failed one or more constraints, or unrecoverable MCP error
+  1 — Backtest failed one or more constraints, or unrecoverable API error
   2 — Invalid arguments or file not found
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -44,7 +40,9 @@ import yaml
 # Constants
 # ---------------------------------------------------------------------------
 
-_MCP_BASE_URL: str = os.environ.get("QC_MCP_BASE_URL", "").strip()
+_QC_BASE_URL: str = "https://www.quantconnect.com/api/v2"
+_QC_USER_ID: str = os.environ.get("QC_USER_ID", "").strip()
+_QC_API_TOKEN: str = os.environ.get("QC_API_TOKEN", "").strip()
 _SHARPE_RATIO_MIN: float = 0.5            # hard floor regardless of spec
 _POLL_INTERVAL_SECONDS: int = 10          # seconds between backtest polls
 _POLL_MAX_ATTEMPTS: int = 60             # max polls (~10 min timeout)
@@ -57,123 +55,151 @@ _REQUEST_TIMEOUT_SECONDS: int = 30
 
 
 class MCPConnectionError(RuntimeError):
-    """Raised when the MCP server is unreachable (connection refused, timeout, etc.)."""
+    """Raised when the QC REST API is unreachable (connection refused, timeout, etc.)."""
 
 
 # ---------------------------------------------------------------------------
-# JSON-RPC helpers
+# REST API helpers
 # ---------------------------------------------------------------------------
 
 
-def _rpc_call(
-    tool_name: str,
-    arguments: dict[str, Any],
-    call_id: str = "1",
+def _qc_auth(user_id: str, api_token: str) -> tuple[dict[str, str], tuple[str, str]]:
+    """Build HTTP Basic auth tuple and Timestamp header for a QC API request."""
+    ts = str(int(time.time()))
+    token_hash = hashlib.sha256(
+        f"{user_id}:{api_token}:{ts}".encode("utf-8")
+    ).hexdigest()
+    headers = {"Timestamp": ts}
+    return headers, (user_id, token_hash)
+
+
+def _qc_post(
+    endpoint: str,
+    payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Send a single JSON-RPC 2.0 ``tools/call`` request to the MCP server.
+    """POST to a QC REST API endpoint and return the parsed JSON body.
 
-    Returns the parsed ``result`` object from the response.
-    Raises ``RuntimeError`` on transport or protocol errors.
+    Raises ``MCPConnectionError`` on connection failure, ``RuntimeError`` on
+    HTTP or API-level errors.
     """
-    mcp_url = _MCP_BASE_URL  # always non-empty when called (stub guard in main())
-    payload = {
-        "jsonrpc": "2.0",
-        "id": call_id,
-        "method": "tools/call",
-        "params": {
-            "name": tool_name,
-            "arguments": arguments,
-        },
-    }
+    headers, auth = _qc_auth(_QC_USER_ID, _QC_API_TOKEN)
+    url = f"{_QC_BASE_URL}/{endpoint}"
     try:
-        response = requests.post(
-            mcp_url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
+        resp = requests.post(
+            url, json=payload, headers=headers, auth=auth,
             timeout=_REQUEST_TIMEOUT_SECONDS,
         )
-        response.raise_for_status()
+        resp.raise_for_status()
     except requests.exceptions.ConnectionError as exc:
         raise MCPConnectionError(
-            f"MCP server unreachable for '{tool_name}': {exc}"
+            f"QC REST API unreachable for '{endpoint}': {exc}"
         ) from exc
     except requests.RequestException as exc:
-        raise RuntimeError(f"MCP server request failed for '{tool_name}': {exc}") from exc
+        raise RuntimeError(f"QC REST API request failed for '{endpoint}': {exc}") from exc
+    body: dict[str, Any] = resp.json()
+    if not body.get("success", True):
+        errors = body.get("errors", [body.get("message", "unknown error")])
+        raise RuntimeError(f"QC REST API returned error for '{endpoint}': {errors}")
+    return body
 
-    body = response.json()
-    if "error" in body:
-        err = body["error"]
-        raise RuntimeError(
-            f"MCP server returned error for '{tool_name}': "
-            f"[{err.get('code')}] {err.get('message')}"
+
+def _qc_get(
+    endpoint: str,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """GET a QC REST API endpoint and return the parsed JSON body.
+
+    Raises ``MCPConnectionError`` on connection failure, ``RuntimeError`` on
+    HTTP or API-level errors.
+    """
+    headers, auth = _qc_auth(_QC_USER_ID, _QC_API_TOKEN)
+    url = f"{_QC_BASE_URL}/{endpoint}"
+    try:
+        resp = requests.get(
+            url, params=params, headers=headers, auth=auth,
+            timeout=_REQUEST_TIMEOUT_SECONDS,
         )
-
-    result = body.get("result", {})
-    # MCP tool results may wrap text content in a content array
-    content = result.get("content", [])
-    if content and isinstance(content, list):
-        first = content[0]
-        if isinstance(first, dict) and first.get("type") == "text":
-            try:
-                return json.loads(first["text"])
-            except (json.JSONDecodeError, KeyError):
-                return {"raw": first.get("text", "")}
-    return result
+        resp.raise_for_status()
+    except requests.exceptions.ConnectionError as exc:
+        raise MCPConnectionError(
+            f"QC REST API unreachable for '{endpoint}': {exc}"
+        ) from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(f"QC REST API request failed for '{endpoint}': {exc}") from exc
+    body: dict[str, Any] = resp.json()
+    if not body.get("success", True):
+        errors = body.get("errors", [body.get("message", "unknown error")])
+        raise RuntimeError(f"QC REST API returned error for '{endpoint}': {errors}")
+    return body
 
 
 # ---------------------------------------------------------------------------
-# MCP workflow steps
+# QC REST API workflow steps
 # ---------------------------------------------------------------------------
 
 
 def _create_project(spec_name: str) -> int:
     """Create a new QuantConnect project and return its project_id."""
-    result = _rpc_call("create_project", {"name": spec_name}, call_id="create_project")
-    project_id = result.get("projectId") or result.get("project_id")
+    body = _qc_post("projects/create", {"name": spec_name, "language": "Py"})
+    projects = body.get("projects", [])
+    if not projects:
+        raise RuntimeError(f"projects/create response missing 'projects': {body}")
+    project_id = projects[0].get("projectId")
     if not project_id:
-        raise RuntimeError(f"create_project did not return a project_id: {result}")
+        raise RuntimeError(f"projects/create did not return a projectId: {body}")
     return int(project_id)
 
 
 def _upload_strategy(project_id: int, spec_name: str, strategy_code: str) -> None:
     """Upload the strategy source file into the QuantConnect project."""
-    _rpc_call(
-        "create_file",
+    _qc_post(
+        "files/create",
         {
-            # MCP server expects camelCase key names matching the QC API convention
             "projectId": project_id,
             "name": f"{spec_name}.py",
             "content": strategy_code,
         },
-        call_id="create_file",
     )
+
+
+def _compile_project(project_id: int) -> str:
+    """Compile the project and return the compile_id."""
+    body = _qc_post("compile/create", {"projectId": project_id})
+    compile_id = (
+        body.get("compileId")
+        or body.get("compile", {}).get("compileId")
+    )
+    if not compile_id:
+        raise RuntimeError(f"compile/create did not return a compileId: {body}")
+    return str(compile_id)
 
 
 def _create_backtest(project_id: int, spec_name: str) -> str:
-    """Trigger a backtest and return the backtest_id."""
-    result = _rpc_call(
-        "create_backtest",
-        {"projectId": project_id, "name": f"{spec_name}_backtest"},
-        call_id="create_backtest",
+    """Compile the project, trigger a backtest, and return the backtest_id."""
+    compile_id = _compile_project(project_id)
+    body = _qc_post(
+        "backtests/create",
+        {"projectId": project_id, "compileId": compile_id, "backtestName": f"{spec_name}_backtest"},
     )
-    backtest_id = result.get("backtestId") or result.get("backtest_id")
+    backtest = body.get("backtest", {})
+    backtest_id = backtest.get("backtestId") or body.get("backtestId")
     if not backtest_id:
-        raise RuntimeError(f"create_backtest did not return a backtest_id: {result}")
+        raise RuntimeError(f"backtests/create did not return a backtestId: {body}")
     return str(backtest_id)
 
 
 def _poll_backtest(project_id: int, backtest_id: str) -> dict[str, Any]:
-    """Poll the MCP server until the backtest completes or timeout is reached.
+    """Poll the QC REST API until the backtest completes or timeout is reached.
 
     Returns the final backtest result dict.
     Raises ``RuntimeError`` on timeout or fatal server error.
     """
     for attempt in range(1, _POLL_MAX_ATTEMPTS + 1):
-        result = _rpc_call(
-            "read_backtest",
-            {"projectId": project_id, "backtestId": backtest_id},
-            call_id=f"read_backtest_{attempt}",
+        body = _qc_get(
+            "backtests/read",
+            params={"projectId": project_id, "backtestId": backtest_id},
         )
+        result: dict[str, Any] = body.get("backtest", body)
         progress: float = float(result.get("progress", result.get("Progress", 0.0)))
         completed: bool = result.get("completed", result.get("Completed", False))
 
@@ -308,7 +334,7 @@ def upload_and_evaluate(
     spec_file: Path,
     strategy_file: Path,
 ) -> dict[str, Any]:
-    """Run the full QC upload → backtest → evaluate pipeline via MCP JSON-RPC.
+    """Run the full QC upload → backtest → evaluate pipeline via QC REST API.
 
     Returns a summary dict with keys:
       project_id, backtest_id, result (PASS/FAIL), passed, violations,
@@ -410,10 +436,10 @@ def main(argv: list[str] | None = None) -> int:
         })
         return 2
 
-    # Stub fallback: QC_MCP_BASE_URL not configured — skip evaluation (non-blocking CI)
-    if not _MCP_BASE_URL:
+    # Stub fallback: QC credentials not configured — skip evaluation (non-blocking CI)
+    if not _QC_USER_ID or not _QC_API_TOKEN:
         print(
-            "[qc_upload_eval] QC_MCP_BASE_URL not set — writing stub result (non-blocking).",
+            "[qc_upload_eval] QC_USER_ID or QC_API_TOKEN not set — writing stub result (non-blocking).",
             file=sys.stderr,
         )
         stub: dict[str, Any] = {
@@ -426,7 +452,7 @@ def main(argv: list[str] | None = None) -> int:
             "violation_count": 0,
             "violations": [],
             "backtest_stats": {},
-            "note": "QC_MCP_BASE_URL not configured — MCP evaluation skipped",
+            "note": "QC_USER_ID/QC_API_TOKEN not configured — REST API evaluation skipped",
         }
         _write(stub)
         return 0
@@ -434,9 +460,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         summary = upload_and_evaluate(spec_file, strategy_file)
     except MCPConnectionError as exc:
-        # MCP service failed to start or is unreachable — non-blocking stub
+        # QC REST API unreachable — non-blocking stub
         print(
-            f"[qc_upload_eval] MCP server unreachable ({exc}) — writing stub result.",
+            f"[qc_upload_eval] QC REST API unreachable ({exc}) — writing stub result.",
             file=sys.stderr,
         )
         stub_conn: dict[str, Any] = {
@@ -449,12 +475,12 @@ def main(argv: list[str] | None = None) -> int:
             "violation_count": 0,
             "violations": [],
             "backtest_stats": {},
-            "note": f"MCP server unreachable — evaluation skipped: {exc}",
+            "note": f"QC REST API unreachable — evaluation skipped: {exc}",
         }
         _write(stub_conn)
         return 0
     except RuntimeError as exc:
-        print(f"[qc_upload_eval] MCP error: {exc}", file=sys.stderr)
+        print(f"[qc_upload_eval] QC REST API error: {exc}", file=sys.stderr)
         error_result: dict[str, Any] = {
             "spec_file": str(spec_file),
             "strategy_file": str(strategy_file),

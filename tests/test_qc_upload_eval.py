@@ -255,8 +255,9 @@ class TestCLI:
         assert exc_info.value.code != 0
 
     def test_stub_result_when_mcp_url_not_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When QC_MCP_BASE_URL is unset, writes stub result and exits 0."""
-        monkeypatch.setattr(qc_upload_eval, "_MCP_BASE_URL", "")
+        """When QC_USER_ID/QC_API_TOKEN are unset, writes stub result and exits 0."""
+        monkeypatch.setattr(qc_upload_eval, "_QC_USER_ID", "")
+        monkeypatch.setattr(qc_upload_eval, "_QC_API_TOKEN", "")
         spec = _make_spec(tmp_path)
         strategy = _make_strategy_file(tmp_path)
         out_file = tmp_path / "out.json"
@@ -268,8 +269,9 @@ class TestCLI:
         assert "note" in data
 
     def test_stub_result_when_mcp_unreachable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When MCP server is unreachable (connection error), writes stub and exits 0."""
-        monkeypatch.setattr(qc_upload_eval, "_MCP_BASE_URL", "http://localhost:9999/mcp")
+        """When QC REST API is unreachable (connection error), writes stub and exits 0."""
+        monkeypatch.setattr(qc_upload_eval, "_QC_USER_ID", "test_user")
+        monkeypatch.setattr(qc_upload_eval, "_QC_API_TOKEN", "test_token")
         spec = _make_spec(tmp_path)
         strategy = _make_strategy_file(tmp_path)
         out_file = tmp_path / "out.json"
@@ -289,7 +291,8 @@ class TestCLI:
         strategy_file = _make_strategy_file(tmp_path)
         out_file = tmp_path / "output.json"
 
-        monkeypatch.setattr(qc_upload_eval, "_MCP_BASE_URL", "http://localhost:8000/mcp")
+        monkeypatch.setattr(qc_upload_eval, "_QC_USER_ID", "test_user")
+        monkeypatch.setattr(qc_upload_eval, "_QC_API_TOKEN", "test_token")
 
         backtest_result = {
             "statistics": {"SharpeRatio": "1.5", "Drawdown": "0.10"},
@@ -313,7 +316,8 @@ class TestCLI:
         strategy_file = _make_strategy_file(tmp_path)
         out_file = tmp_path / "output.json"
 
-        monkeypatch.setattr(qc_upload_eval, "_MCP_BASE_URL", "http://localhost:8000/mcp")
+        monkeypatch.setattr(qc_upload_eval, "_QC_USER_ID", "test_user")
+        monkeypatch.setattr(qc_upload_eval, "_QC_API_TOKEN", "test_token")
 
         with patch.object(qc_upload_eval, "_create_project",
                           side_effect=RuntimeError("protocol error")):

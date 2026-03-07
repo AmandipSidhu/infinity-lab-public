@@ -60,8 +60,6 @@ _CATEGORY_MAP: dict[str, list[str]] = {
     "project": [
         "create_project",
         "read_project",
-        "update_project",
-        "delete_project",
         "list_projects",
         "create_file",
         "read_file",
@@ -92,11 +90,7 @@ _CATEGORY_MAP: dict[str, list[str]] = {
         "read_backtest_statistics",
         "read_backtest_logs",
         "create_backtest_report",
-        "create_live_algorithm",
         "read_live_algorithm",
-        "update_live_algorithm",
-        "delete_live_algorithm",
-        "list_live_algorithms",
         "read_live_orders",
         "read_live_trades",
         "read_live_charts",
@@ -277,30 +271,6 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
     {
         "name": "read_project",
         "description": "Read metadata and settings for an existing QuantConnect project.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-            },
-            "required": ["projectId"],
-        },
-    },
-    {
-        "name": "update_project",
-        "description": "Update the name or description of an existing QuantConnect project.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "name": {"type": "string", "description": "New project name (optional)"},
-                "description": {"type": "string", "description": "New description (optional)"},
-            },
-            "required": ["projectId"],
-        },
-    },
-    {
-        "name": "delete_project",
-        "description": "Permanently delete a QuantConnect project and all its files.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -655,24 +625,6 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "create_live_algorithm",
-        "description": "Deploy a compiled algorithm to live trading on a brokerage.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "compileId": {"type": "string", "description": "Compile ID to deploy"},
-                "nodeId": {"type": "string", "description": "Live trading node ID"},
-                "brokerageSettings": {
-                    "type": "object",
-                    "description": "Brokerage-specific configuration",
-                },
-                "versionId": {"type": "string", "description": "Algorithm version ID (optional)"},
-            },
-            "required": ["projectId", "compileId", "nodeId", "brokerageSettings"],
-        },
-    },
-    {
         "name": "read_live_algorithm",
         "description": "Read the status and runtime details of a live trading algorithm.",
         "input_schema": {
@@ -682,45 +634,6 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
                 "deployId": {"type": "string", "description": "Deployment ID"},
             },
             "required": ["projectId", "deployId"],
-        },
-    },
-    {
-        "name": "update_live_algorithm",
-        "description": "Send a live command (e.g. parameter update) to a running live algorithm.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "deployId": {"type": "string", "description": "Deployment ID"},
-                "command": {"type": "object", "description": "Command payload to send"},
-            },
-            "required": ["projectId", "deployId", "command"],
-        },
-    },
-    {
-        "name": "delete_live_algorithm",
-        "description": "Stop and liquidate a live trading algorithm.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "deployId": {"type": "string", "description": "Deployment ID"},
-            },
-            "required": ["projectId", "deployId"],
-        },
-    },
-    {
-        "name": "list_live_algorithms",
-        "description": "List all live trading algorithms for the authenticated user.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "description": "Filter by status (optional): running, stopped, runtime-error",
-                },
-            },
-            "required": [],
         },
     },
     {

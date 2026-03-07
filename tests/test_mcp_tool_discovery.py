@@ -233,8 +233,8 @@ class TestFetchLiveTools:
 
 
 class TestStaticToolCatalogue:
-    def test_has_at_least_60_tools(self) -> None:
-        assert len(_STATIC_TOOLS) >= 60
+    def test_has_at_least_54_tools(self) -> None:
+        assert len(_STATIC_TOOLS) >= 54
 
     def test_all_tools_have_name_description_input_schema(self) -> None:
         for tool in _STATIC_TOOLS:
@@ -317,7 +317,7 @@ class TestMain:
             rc = main(["--output", str(out), "--mcp-url", "http://localhost:8000/mcp"])
         assert rc == 0
         manifest = json.loads(out.read_text(encoding="utf-8"))
-        assert manifest["total_count"] >= 60
+        assert manifest["total_count"] >= 54
 
     def test_exit_1_on_write_failure(self, tmp_path: Path) -> None:
         out = tmp_path / "manifest.json"
