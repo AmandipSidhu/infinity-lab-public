@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'strategies/**/*.py'
+      - 'scripts/**/*.py'
   workflow_dispatch:
     inputs:
       strategy_file:
