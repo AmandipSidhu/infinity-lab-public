@@ -6,6 +6,7 @@ the REST API, compiles it, runs a backtest, and returns the Sharpe ratio.
 
 Authentication:
   HTTP Basic Auth + SHA-256 HMAC timestamp.
+  Correct formula: sha256(api_token:timestamp) → Basic base64(user_id:hash)
   Secrets: ``QC_USER_ID``, ``QC_API_TOKEN`` (read from environment).
 
 QC API Endpoints used:
@@ -45,6 +46,7 @@ Exit codes:
 """
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -103,19 +105,26 @@ class QCCompileError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _qc_auth(user_id: str, api_token: str) -> tuple[dict[str, str], tuple[str, str]]:
-    """Return (headers, basic-auth tuple) for a QC REST API request.
+def _qc_auth(user_id: str, api_token: str) -> dict[str, str]:
+    """Return headers dict for a QC REST API request.
 
     QC expects:
-      - Authorization: Basic base64(userId:sha256(userId:apiToken:timestamp))
+      - Authorization: Basic base64(userId:sha256(apiToken:timestamp))
       - Timestamp: <unix seconds>
+
+    NOTE: hash input is ONLY api_token:timestamp (NOT user_id:api_token:timestamp).
     """
     ts = str(int(time.time()))
     token_hash = hashlib.sha256(
-        f"{user_id}:{api_token}:{ts}".encode("utf-8")
+        f"{api_token}:{ts}".encode("utf-8")
     ).hexdigest()
-    headers = {"Timestamp": ts}
-    return headers, (user_id, token_hash)
+    credentials = base64.b64encode(
+        f"{user_id}:{token_hash}".encode("utf-8")
+    ).decode("utf-8")
+    return {
+        "Authorization": f"Basic {credentials}",
+        "Timestamp": ts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -138,10 +147,10 @@ def _http_post(
     last_exc: Exception | None = None
 
     for attempt in range(1, _MAX_RETRIES + 1):
-        headers, auth = _qc_auth(user_id, api_token)
+        headers = _qc_auth(user_id, api_token)
         try:
             resp = requests.post(
-                url, json=payload, headers=headers, auth=auth,
+                url, json=payload, headers=headers,
                 timeout=_REQUEST_TIMEOUT_SECONDS,
             )
         except requests.RequestException as exc:
@@ -221,10 +230,10 @@ def _http_get(
     last_exc: Exception | None = None
 
     for attempt in range(1, _MAX_RETRIES + 1):
-        headers, auth = _qc_auth(user_id, api_token)
+        headers = _qc_auth(user_id, api_token)
         try:
             resp = requests.get(
-                url, params=params, headers=headers, auth=auth,
+                url, params=params, headers=headers,
                 timeout=_REQUEST_TIMEOUT_SECONDS,
             )
         except requests.RequestException as exc:
@@ -385,7 +394,6 @@ def poll_compile(
             params={"projectId": project_id, "compileId": compile_id},
         )
 
-        # QC returns the compile object nested or at the top level
         compile_obj: dict[str, Any] = body.get("compile", body)
         state: str = str(
             compile_obj.get("state")
