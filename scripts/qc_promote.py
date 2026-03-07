@@ -20,7 +20,7 @@ Authentication:
   Header     : Timestamp: <unix_ts>
 
 Allowed QC API endpoints (hard constraint — no live/paper/portfolio endpoints):
-  /projects/create, /files/create, /files/update, /projects/read
+  /projects/create, /files/create, /projects/read
 
 Usage:
   python scripts/qc_promote.py \\
@@ -81,13 +81,14 @@ def _qc_post(
     user_id: str,
     api_token: str,
     payload: dict[str, Any],
+    project_name: str | None = None,
 ) -> dict[str, Any]:
     """POST to a QC REST API endpoint and return the parsed JSON body.
 
     Raises RuntimeError on HTTP or API-level errors.
     Only allowed endpoints may be called; others raise ValueError.
     """
-    _assert_allowed_endpoint(endpoint)
+    _assert_allowed_endpoint(endpoint, project_name)
     headers, auth = _qc_auth(user_id, api_token)
     url = f"{_QC_BASE_URL}/{endpoint}"
     try:
@@ -134,16 +135,33 @@ def _qc_get(
 
 
 _ALLOWED_ENDPOINTS: frozenset[str] = frozenset(
-    {"projects/create", "files/create", "files/update", "projects/read"}
+    {"projects/create", "files/create", "projects/read"}
+)
+
+_BLOCKED_PROJECT_NAME_PATTERN: re.Pattern[str] = re.compile(
+    r"^(paper|live)-", re.IGNORECASE
 )
 
 
-def _assert_allowed_endpoint(endpoint: str) -> None:
-    """Raise ValueError if *endpoint* is not in the allowed set."""
+def _assert_allowed_endpoint(
+    endpoint: str, project_name: str | None = None
+) -> None:
+    """Raise ValueError if *endpoint* is not in the allowed set, or if
+    *project_name* targets a live or paper project.
+
+    Per ARCHITECTURE v4.5 §9.4: ACB may CREATE new QC projects only — it must
+    never target live-* or paper-* projects.
+    """
     if endpoint not in _ALLOWED_ENDPOINTS:
         raise ValueError(
             f"Endpoint '{endpoint}' is not permitted. "
             f"Allowed: {sorted(_ALLOWED_ENDPOINTS)}"
+        )
+    if project_name is not None and _BLOCKED_PROJECT_NAME_PATTERN.match(project_name):
+        raise ValueError(
+            f"Project name '{project_name}' targets a live or paper project. "
+            "ACB may only CREATE new QC projects — targeting live or paper "
+            "projects is not permitted."
         )
 
 
@@ -223,6 +241,7 @@ def promote(
         user_id,
         api_token,
         {"name": project_name, "language": "Py"},
+        project_name=project_name,
     )
     projects = body.get("projects", [])
     if not projects:
