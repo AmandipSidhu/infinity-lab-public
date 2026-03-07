@@ -215,37 +215,35 @@ class TestFallbackChain:
     def test_tier1_success_returns_result(self) -> None:
         raw = self._make_valid_raw(VALID_RESULT)
         with patch.object(strategy_reviewer, "_call_gemini", return_value=raw) as mock_gemini:
-            with patch.object(strategy_reviewer, "_call_openai") as mock_openai:
-                with patch.object(strategy_reviewer, "_call_anthropic") as mock_anthropic:
-                    result = _run_fallback_chain(MINIMAL_SPEC_YAML)
+            with patch.object(strategy_reviewer, "_call_gemini_thinking") as mock_gemini_thinking:
+                result = _run_fallback_chain(MINIMAL_SPEC_YAML)
         assert result["verdict"] == "PASS"
-        mock_gemini.assert_called_once_with("gemini-2.0-flash", MINIMAL_SPEC_YAML)
-        mock_openai.assert_not_called()
-        mock_anthropic.assert_not_called()
+        mock_gemini.assert_called_once_with("gemini-2.5-flash", MINIMAL_SPEC_YAML)
+        mock_gemini_thinking.assert_not_called()
 
     def test_tier1_fails_tier2_succeeds(self) -> None:
         raw = self._make_valid_raw(WARN_RESULT)
-        call_count = {"n": 0}
+        models_called: list[str] = []
 
         def gemini_side_effect(model: str, spec: str) -> str:
-            call_count["n"] += 1
-            if model == "gemini-2.0-flash":
+            models_called.append(model)
+            if model == "gemini-2.5-flash" and len(models_called) == 1:
+                # First call is Tier 1 — fail it so Tier 2 is tried
                 raise RuntimeError("Tier 1 API error")
             return raw
 
         with patch.object(strategy_reviewer, "_call_gemini", side_effect=gemini_side_effect):
-            with patch.object(strategy_reviewer, "_call_openai") as mock_openai:
+            with patch.object(strategy_reviewer, "_call_gemini_thinking") as mock_thinking:
                 result = _run_fallback_chain(MINIMAL_SPEC_YAML)
 
         assert result["verdict"] == "WARN"
-        assert call_count["n"] == 2  # Tier 1 (fail) + Tier 2 (success)
-        mock_openai.assert_not_called()
+        assert models_called == ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+        mock_thinking.assert_not_called()
 
     def test_all_tiers_fail_returns_srv_w050(self) -> None:
         with patch.object(strategy_reviewer, "_call_gemini", side_effect=RuntimeError("fail")):
-            with patch.object(strategy_reviewer, "_call_openai", side_effect=RuntimeError("fail")):
-                with patch.object(strategy_reviewer, "_call_anthropic", side_effect=RuntimeError("fail")):
-                    result = _run_fallback_chain(MINIMAL_SPEC_YAML)
+            with patch.object(strategy_reviewer, "_call_gemini_thinking", side_effect=RuntimeError("fail")):
+                result = _run_fallback_chain(MINIMAL_SPEC_YAML)
 
         assert result["verdict"] == "WARN"
         assert result["risk_level"] == "high"
@@ -264,40 +262,52 @@ class TestFallbackChain:
             return good_raw  # Second call: repair
 
         with patch.object(strategy_reviewer, "_call_gemini", side_effect=gemini_side_effect):
-            with patch.object(strategy_reviewer, "_call_openai") as mock_openai:
+            with patch.object(strategy_reviewer, "_call_gemini_thinking") as mock_thinking:
                 result = _run_fallback_chain(MINIMAL_SPEC_YAML)
 
         assert result["verdict"] == "PASS"
         assert call_count["n"] == 2
-        mock_openai.assert_not_called()
+        mock_thinking.assert_not_called()
 
-    def test_tier1_invalid_json_repair_fails_falls_to_tier3(self) -> None:
+    def test_tier1_invalid_json_repair_fails_falls_to_tier2(self) -> None:
         bad_raw = "not json at all"
         good_raw = self._make_valid_raw(VALID_RESULT)
 
-        gemini_calls = {"n": 0}
+        models_called: list[str] = []
 
         def gemini_side_effect(model: str, text: str) -> str:
-            gemini_calls["n"] += 1
-            return bad_raw  # Always bad — both initial and repair attempts
+            models_called.append(model)
+            if model == "gemini-2.5-flash":
+                # Both Tier 1 initial and Tier 1 repair return bad JSON
+                return bad_raw
+            # Tier 2 (gemini-2.5-flash-lite) succeeds
+            return good_raw
 
         with patch.object(strategy_reviewer, "_call_gemini", side_effect=gemini_side_effect):
-            with patch.object(strategy_reviewer, "_call_openai", return_value=good_raw) as mock_openai:
+            with patch.object(strategy_reviewer, "_call_gemini_thinking") as mock_thinking:
                 result = _run_fallback_chain(MINIMAL_SPEC_YAML)
 
         assert result["verdict"] == "PASS"
-        mock_openai.assert_called_once()
+        assert "gemini-2.5-flash-lite" in models_called
+        mock_thinking.assert_not_called()
 
-    def test_tier4_claude_called_as_last_resort(self) -> None:
+    def test_tier4_gemini_pro_called_as_last_resort(self) -> None:
         raw = self._make_valid_raw(WARN_RESULT)
 
-        with patch.object(strategy_reviewer, "_call_gemini", side_effect=RuntimeError("fail")):
-            with patch.object(strategy_reviewer, "_call_openai", side_effect=RuntimeError("fail")):
-                with patch.object(strategy_reviewer, "_call_anthropic", return_value=raw) as mock_claude:
-                    result = _run_fallback_chain(MINIMAL_SPEC_YAML)
+        gemini_calls: list[tuple[str, str]] = []
+
+        def gemini_side_effect(model: str, text: str) -> str:
+            gemini_calls.append((model, text))
+            if model == "gemini-2.5-pro":
+                return raw
+            raise RuntimeError("fail")
+
+        with patch.object(strategy_reviewer, "_call_gemini", side_effect=gemini_side_effect):
+            with patch.object(strategy_reviewer, "_call_gemini_thinking", side_effect=RuntimeError("fail")):
+                result = _run_fallback_chain(MINIMAL_SPEC_YAML)
 
         assert result["verdict"] == "WARN"
-        mock_claude.assert_called_once_with("claude-opus-4-5", MINIMAL_SPEC_YAML)
+        assert any(model == "gemini-2.5-pro" for model, _ in gemini_calls)
 
 
 # ---------------------------------------------------------------------------

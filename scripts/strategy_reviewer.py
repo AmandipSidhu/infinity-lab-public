@@ -10,11 +10,11 @@ strict JSON verdict:
         "concerns":   ["...", ...]
     }
 
-Model fallback chain (in order):
-    Tier 1 — Gemini 2.0 Flash    (google-generativeai)
-    Tier 2 — Gemini 1.5 Pro      (google-generativeai)
-    Tier 3 — gpt-4o-mini         (openai)
-    Tier 4 — Claude Opus          (anthropic)
+Model fallback chain (in order, all Gemini / Google AI Studio):
+    Tier 1 — gemini-2.5-flash       (google-generativeai, thinking OFF)
+    Tier 2 — gemini-2.5-flash-lite  (google-generativeai, separate quota pool)
+    Tier 3 — gemini-2.5-flash       (google-generativeai, thinking tokens ON)
+    Tier 4 — gemini-2.5-pro         (google-generativeai, paid)
 
 Caching:
     SHA-256 of the raw YAML text is used as a cache key.
@@ -185,41 +185,21 @@ def _call_gemini(model_name: str, spec_yaml: str) -> str:
     return response.text
 
 
-def _call_openai(model_name: str, spec_yaml: str) -> str:
-    """Call OpenAI via the openai SDK. Returns raw text."""
-    from openai import OpenAI  # type: ignore[import-untyped]
+def _call_gemini_thinking(model_name: str, spec_yaml: str) -> str:
+    """Call Google Gemini with thinking tokens enabled. Returns raw text."""
+    import google.generativeai as genai  # type: ignore[import-untyped]
 
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
-        raise EnvironmentError("OPENAI_API_KEY is not set")
-    client = OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": spec_yaml},
-        ],
-        response_format={"type": "json_object"},
+        raise EnvironmentError("GEMINI_API_KEY / GOOGLE_API_KEY is not set")
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        system_instruction=_SYSTEM_PROMPT,
     )
-    return response.choices[0].message.content or ""
-
-
-def _call_anthropic(model_name: str, spec_yaml: str) -> str:
-    """Call Anthropic Claude via the anthropic SDK. Returns raw text."""
-    import anthropic  # type: ignore[import-untyped]
-
-    # ANTHROPIC_API_KEY removed from CI — run locally with your own key
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise EnvironmentError("ANTHROPIC_API_KEY is not set")
-    client = anthropic.Anthropic(api_key=api_key)
-    message = client.messages.create(
-        model=model_name,
-        max_tokens=1024,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": spec_yaml}],
-    )
-    return message.content[0].text
+    generation_config = {"thinking_config": {"thinking_budget": 8192}}  # matches aider_builder.py _TIER3_THINKING_BUDGET
+    response = model.generate_content(spec_yaml, generation_config=generation_config)
+    return response.text
 
 
 # ---------------------------------------------------------------------------
@@ -240,10 +220,10 @@ def _repair_json(raw_text: str, tier_caller: Any, *caller_args: Any) -> dict[str
 
 # Tier definitions: (label, caller_attribute_name, model_name)
 _TIERS: list[tuple[str, str, str]] = [
-    ("Tier 1: Gemini 2.0 Flash", "_call_gemini", "gemini-2.0-flash"),
-    ("Tier 2: Gemini 1.5 Pro", "_call_gemini", "gemini-1.5-pro"),
-    ("Tier 3: gpt-4o-mini", "_call_openai", "gpt-4o-mini"),
-    ("Tier 4: Claude Opus", "_call_anthropic", "claude-opus-4-5"),
+    ("Tier 1: gemini-2.5-flash", "_call_gemini", "gemini-2.5-flash"),
+    ("Tier 2: gemini-2.5-flash-lite", "_call_gemini", "gemini-2.5-flash-lite"),
+    ("Tier 3: gemini-2.5-flash +thinking", "_call_gemini_thinking", "gemini-2.5-flash"),
+    ("Tier 4: gemini-2.5-pro", "_call_gemini", "gemini-2.5-pro"),
 ]
 
 
@@ -376,9 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     # so CI does not time out waiting for API calls that have no chance of success.
     # review_spec() itself is unchanged so unit tests can still mock _run_fallback_chain.
     gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not any([gemini_key, openai_key, anthropic_key]):
+    if not gemini_key:
         print(
             "[strategy_reviewer] No API key configured — writing stub review.",
             file=sys.stderr,
