@@ -658,19 +658,19 @@ jobs:
           PYEOF
 
       # Step 12 (ARCHITECTURE v4.5 §6): push E2E report to infinity-lab-private.
-      # Secrets required: PRIVATE_REPO_PAT — a PAT with write access to AmandipSidhu/infinity-lab-private.
+      # Secret: INFINITY_PUBLIC_TO_PRIVATE_ACCESS — PAT with write access to AmandipSidhu/infinity-lab-private.
       - name: Push E2E Report to infinity-lab-private
         if: always()
         env:
-          PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+          INFINITY_PUBLIC_TO_PRIVATE_ACCESS: ${{ secrets.INFINITY_PUBLIC_TO_PRIVATE_ACCESS }}
         run: |
           set -euo pipefail
           PRIVATE_REPO="AmandipSidhu/infinity-lab-private"
           SPEC_STEM="${{ steps.e2e-report.outputs.spec_stem }}"
           REPORT_PATH="${{ steps.e2e-report.outputs.report_path }}"
 
-          if [ -z "${PRIVATE_REPO_PAT:-}" ]; then
-            echo "::warning::PRIVATE_REPO_PAT not set — E2E report not pushed to infinity-lab-private."
+          if [ -z "${INFINITY_PUBLIC_TO_PRIVATE_ACCESS:-}" ]; then
+            echo "::warning::INFINITY_PUBLIC_TO_PRIVATE_ACCESS not set — E2E report not pushed to infinity-lab-private."
             exit 0
           fi
 
@@ -680,7 +680,7 @@ jobs:
           fi
 
           git clone --depth=1 \
-            "https://x-access-token:${PRIVATE_REPO_PAT}@github.com/${PRIVATE_REPO}.git" \
+            "https://x-access-token:${INFINITY_PUBLIC_TO_PRIVATE_ACCESS}@github.com/${PRIVATE_REPO}.git" \
             /tmp/infinity-lab-private
 
           mkdir -p "/tmp/infinity-lab-private/reports/e2e/${SPEC_STEM}"
