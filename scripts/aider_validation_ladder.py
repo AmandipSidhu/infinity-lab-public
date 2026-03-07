@@ -498,7 +498,8 @@ def run_level1(
                 "stub": tier_result.get("stub", False),
             }
             tiers_log.append(tier_entry)
-            continue
+            # Abort the ladder on missing Sharpe to avoid using an undefined prev_sharpe
+            break
 
         print(f"[validation_ladder] Tier {tier} Sharpe: {sharpe:.4f}")
 
