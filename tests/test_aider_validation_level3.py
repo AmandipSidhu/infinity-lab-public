@@ -37,11 +37,6 @@ import run_aider_validation_level3 as lvl3  # noqa: E402
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load_log(tmp_path: Path | None = None) -> dict:
-    log_path = Path("/tmp/aider_iteration_log_level3.json")
-    return json.loads(log_path.read_text(encoding="utf-8"))
-
-
 # ---------------------------------------------------------------------------
 # Strategy file presence and validity
 # ---------------------------------------------------------------------------
