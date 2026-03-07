@@ -24,8 +24,13 @@ def test_qc_auth_validation() -> None:
         text=True,
     )
 
-    assert result.returncode == 0, f"Auth validation failed: {result.stdout}"
-    assert "✅" in result.stdout, "Expected success marker in output"
+    assert (
+        result.returncode == 0
+    ), f"Auth validation failed: stdout={result.stdout}\nstderr={result.stderr}"
+    assert "✅" in result.stdout, (
+        "Expected success marker in output. "
+        f"stdout={result.stdout}\nstderr={result.stderr}"
+    )
 
 
 @pytest.mark.integration
