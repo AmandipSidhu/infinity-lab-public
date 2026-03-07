@@ -647,17 +647,54 @@ jobs:
 
           report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
           print(f"E2E report written to: {report_path}")
+
+          # Write step outputs for use by the downstream push step
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if not github_output:
+              raise RuntimeError("GITHUB_OUTPUT environment variable is not set — cannot publish step outputs")
+          with open(github_output, "a", encoding="utf-8") as _f:
+              _f.write(f"spec_stem={spec_stem}\n")
+              _f.write(f"report_path={report_path}\n")
           PYEOF
 
-          # Commit and push the report back to the branch (best-effort)
+      # Step 12 (ARCHITECTURE v4.5 §6): push E2E report to infinity-lab-private.
+      # Secrets required: PRIVATE_REPO_PAT — a PAT with write access to AmandipSidhu/infinity-lab-private.
+      - name: Push E2E Report to infinity-lab-private
+        if: always()
+        env:
+          PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          set -euo pipefail
+          PRIVATE_REPO="AmandipSidhu/infinity-lab-private"
+          SPEC_STEM="${{ steps.e2e-report.outputs.spec_stem }}"
+          REPORT_PATH="${{ steps.e2e-report.outputs.report_path }}"
+
+          if [ -z "${PRIVATE_REPO_PAT:-}" ]; then
+            echo "::warning::PRIVATE_REPO_PAT not set — E2E report not pushed to infinity-lab-private."
+            exit 0
+          fi
+
+          if [ -z "${REPORT_PATH:-}" ] || [ ! -f "${REPORT_PATH}" ]; then
+            echo "::warning::E2E report not found at '${REPORT_PATH}' — skipping push to infinity-lab-private."
+            exit 0
+          fi
+
+          git clone --depth=1 \
+            "https://x-access-token:${PRIVATE_REPO_PAT}@github.com/${PRIVATE_REPO}.git" \
+            /tmp/infinity-lab-private
+
+          mkdir -p "/tmp/infinity-lab-private/reports/e2e/${SPEC_STEM}"
+          cp "${REPORT_PATH}" "/tmp/infinity-lab-private/reports/e2e/${SPEC_STEM}/"
+
+          cd /tmp/infinity-lab-private
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add reports/e2e/
+          git add "reports/e2e/${SPEC_STEM}/"
           if git diff --cached --quiet; then
             echo "No new report to commit."
           else
-            git commit -m "ci: add E2E report for ${{ matrix.spec_file }} [run ${{ github.run_id }} attempt ${{ github.run_attempt }}]"
-            git push || echo "::warning::Could not push E2E report — report exists in the workflow artifacts only."
+            git commit -m "chore: e2e report for ${SPEC_STEM} [run ${{ github.run_id }}]"
+            git push || echo "::warning::Could not push E2E report to ${PRIVATE_REPO} — report exists in the workflow artifacts only."
           fi
 
       - name: Test Slack Notification (send Hi)
