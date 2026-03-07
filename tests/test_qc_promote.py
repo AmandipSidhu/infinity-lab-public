@@ -64,11 +64,12 @@ class TestAssertAllowedEndpoint:
     def test_allowed_files_create(self) -> None:
         _assert_allowed_endpoint("files/create")
 
-    def test_allowed_files_update(self) -> None:
-        _assert_allowed_endpoint("files/update")
-
     def test_allowed_projects_read(self) -> None:
         _assert_allowed_endpoint("projects/read")
+
+    def test_disallowed_files_update(self) -> None:
+        with pytest.raises(ValueError, match="files/update"):
+            _assert_allowed_endpoint("files/update")
 
     def test_disallowed_live_create(self) -> None:
         with pytest.raises(ValueError, match="live/create"):
@@ -81,6 +82,14 @@ class TestAssertAllowedEndpoint:
     def test_disallowed_portfolio(self) -> None:
         with pytest.raises(ValueError):
             _assert_allowed_endpoint("portfolio/read")
+
+    def test_paper_project_name_rejected(self) -> None:
+        with pytest.raises(ValueError, match="paper-vwap-v1"):
+            _assert_allowed_endpoint("projects/create", project_name="paper-vwap-v1")
+
+    def test_live_project_name_rejected(self) -> None:
+        with pytest.raises(ValueError, match="live-macd-v2"):
+            _assert_allowed_endpoint("projects/create", project_name="live-macd-v2")
 
 
 # ---------------------------------------------------------------------------
