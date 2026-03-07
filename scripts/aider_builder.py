@@ -528,7 +528,7 @@ def run_tier_3(spec_file: Path, spec_name: str) -> TierRunResult:
         pre_run_hash = _file_sha256(strategy_path)
 
         try:
-tml            result = _run_aider(
+            result = _run_aider(
                 model,
                 spec_file,
                 spec_name,
