@@ -3,7 +3,7 @@
 
 Tier ladder (cheapest-first, all Gemini / Google AI Studio):
   Tier 1 — gemini/gemini-2.5-flash          (free tier, 500 RPD, thinking OFF)
-  Tier 2 — gemini/gemini-2.5-flash-lite     (free tier, separate quota pool)
+  Tier 2 — gemini/gemini-2.0-flash-lite     (free tier, separate quota pool)
   Tier 3 — gemini/gemini-2.5-flash          (thinking budget ON, reasoning mode)
   Tier 4 — gemini/gemini-2.5-pro            (paid, nuclear option)
 
@@ -46,7 +46,7 @@ _MIN_STRATEGY_LINES: int = 80
 # Tier 1: Gemini 2.5 Flash — free tier, 500 req/day, no thinking
 _TIER1_MODEL: str = "gemini/gemini-2.5-flash"
 # Tier 2: Gemini 2.5 Flash-Lite — free tier, separate quota pool
-_TIER2_MODEL: str = "gemini/gemini-2.5-flash-lite"
+_TIER2_MODEL: str = "gemini/gemini-2.0-flash-lite"
 # Tier 3: Gemini 2.5 Flash with thinking budget — reasoning mode, still free tier
 _TIER3_MODEL: str = "gemini/gemini-2.5-flash"
 _TIER3_THINKING_BUDGET: int = 8192  # tokens allocated to thinking chain
@@ -57,7 +57,7 @@ _TIER4_MODEL: str = "gemini/gemini-2.5-pro"
 _TIER1_SUBPROCESS_TIMEOUT: int = 60
 _TIER2_SUBPROCESS_TIMEOUT: int = 60
 # Tier 3 uses thinking — allow more wall time.
-_TIER3_SUBPROCESS_TIMEOUT: int = 120
+_TIER3_SUBPROCESS_TIMEOUT: int = 300
 # Tier 4 uses Pro — slower, allow more wall time.
 _TIER4_SUBPROCESS_TIMEOUT: int = 180
 
@@ -876,12 +876,10 @@ def build(spec_file_str: str) -> bool:
     Path("strategies").mkdir(exist_ok=True)
     Path("tests").mkdir(exist_ok=True)
 
-    # Pre-create the strategy directory so aider has an edit target
+    # Pre-create the strategy directory so aider has a target directory
     strategy_dir = Path("strategies") / spec_name
     strategy_dir.mkdir(parents=True, exist_ok=True)
-    strategy_stub = strategy_dir / "main.py"
-    if not strategy_stub.exists():
-        strategy_stub.write_text(f'"""Strategy stub for {spec_name}."""\n', encoding="utf-8")
+    # DO NOT pre-create main.py — aider must create it fresh so hash comparison works
 
     # Only pre-create the test stub — Aider needs an edit target for tests
     test_stub = Path("tests") / f"test_{spec_name}.py"
