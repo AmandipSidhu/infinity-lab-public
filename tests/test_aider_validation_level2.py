@@ -197,8 +197,7 @@ class TestRunTierBacktest:
         strategy = tmp_path / "tier1.py"
         strategy.write_text("pass")
 
-        with patch("builtins.open", side_effect=lambda p, *a, **k: open(p, *a, **k)):
-            result = run_tier_backtest(1, strategy, "", "")
+        result = run_tier_backtest(1, strategy, "", "")
 
         assert result["backtest_status"] == "stub"
         assert result["sharpe_ratio"] == _STUB_SHARPE[1]
