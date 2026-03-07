@@ -53,13 +53,17 @@ _TIER3_THINKING_BUDGET: int = 8192  # tokens allocated to thinking chain
 # Tier 4: Gemini 2.5 Pro — paid, final escalation (replaces Opus; GEMINI_API_KEY already in CI)
 _TIER4_MODEL: str = "gemini/gemini-2.5-pro"
 
-# Subprocess timeout (seconds) for free-tier calls.
-_TIER1_SUBPROCESS_TIMEOUT: int = 60
-_TIER2_SUBPROCESS_TIMEOUT: int = 60
+# Subprocess timeout (seconds).
+# FIX: free-tier Gemini cold starts routinely exceed 60 s — bumped to 300 s.
+_TIER1_SUBPROCESS_TIMEOUT: int = 300
+_TIER2_SUBPROCESS_TIMEOUT: int = 300
 # Tier 3 uses thinking — allow more wall time.
 _TIER3_SUBPROCESS_TIMEOUT: int = 300
 # Tier 4 uses Pro — slower, allow more wall time.
-_TIER4_SUBPROCESS_TIMEOUT: int = 180
+_TIER4_SUBPROCESS_TIMEOUT: int = 600
+
+# Sentinel written to main.py before aider runs so it has a real edit target.
+_STRATEGY_SENTINEL: str = "# ACB placeholder — aider will overwrite this file\n"
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +164,10 @@ def _build_aider_cmd(
         "--model", model,
         "--yes",
         "--no-git",
+        # FIX: tell aider it is allowed to create/overwrite the strategy file.
+        # Without --new-file aider may refuse to touch a path it did not
+        # discover itself, resulting in a silent exit-0 with no writes.
+        "--new-file", strategy_file,
         "--read", "config/aider_system_prompt_with_tools.txt",
         "--read", "config/qc_tools_manifest.json",
         "--message", prompt,
@@ -220,9 +228,9 @@ def _commit_and_push(
             f"[aider_builder] Strategy file has only {len(real_lines)} non-blank, non-comment lines "
             f"(minimum: {_MIN_STRATEGY_LINES}). Aider produced a stub or skeleton — rejecting."
         )
-    # BUG FIX: detect unchanged-file false-success.
+    # Detect unchanged-file false-success.
     # If aider exited 0 but the file is byte-for-byte identical to what existed
-    # before, it made no changes. Treat as a failure so the tier escalates.
+    # before (including the sentinel), it made no real changes — escalate.
     if pre_run_hash is not None:
         post_run_hash = _file_sha256(strategy_path)
         if post_run_hash == pre_run_hash:
@@ -393,8 +401,6 @@ def _run_free_tier(
     rate_limit_retries = 0
 
     for iteration in range(_MAX_ITERATIONS):
-        # Snapshot the strategy file hash BEFORE running aider so we can
-        # detect an unchanged-file false-success after aider exits 0.
         strategy_path = Path(f"strategies/{spec_name}/main.py")
         pre_run_hash = _file_sha256(strategy_path)
 
@@ -522,7 +528,7 @@ def run_tier_3(spec_file: Path, spec_name: str) -> TierRunResult:
         pre_run_hash = _file_sha256(strategy_path)
 
         try:
-            result = _run_aider(
+tml            result = _run_aider(
                 model,
                 spec_file,
                 spec_name,
@@ -652,14 +658,13 @@ def _write_stub_strategy(spec_file: Path, spec_name: str, spec_data: dict) -> Pa
     risk = spec_data.get("risk_management", {})
     stop_cfg = risk.get("stop_loss", {})
     if isinstance(stop_cfg, dict):
-        # e.g. { atr_multiplier: 2.0 }  — express as fraction of price for stub
         atr_mult = float(stop_cfg.get("atr_multiplier", 2.0))
-        stop_loss = round(atr_mult * 0.01, 4)  # rough proxy: 2xATR ~= 2% stop
+        stop_loss = round(atr_mult * 0.01, 4)
     else:
         stop_loss = float(stop_cfg) if stop_cfg else 0.05
     take_profit = float(risk.get("take_profit", 0.10))
     leverage = float(risk.get("leverage", 1.0))
-    max_position = min(leverage, 1.0)  # never exceed 100% for stub
+    max_position = min(leverage, 1.0)
 
     # --- constraints ------------------------------------------------------
     constraints = spec_data.get("constraints", {})
@@ -794,12 +799,10 @@ def _read_backtest_metrics(path: Path | None = None) -> dict[str, Any]:
         return {}
 
     merged: dict[str, Any] = {}
-    # Populate from sub-dicts first (Statistics, then RuntimeStatistics)
     for sub_key in ("Statistics", "RuntimeStatistics"):
         sub = data.get(sub_key)
         if isinstance(sub, dict):
             merged.update(sub)
-    # Top-level fallback: add keys not already populated from sub-dicts
     for k, v in data.items():
         if k not in ("Statistics", "RuntimeStatistics") and k not in merged:
             merged[k] = v
@@ -876,12 +879,17 @@ def build(spec_file_str: str) -> bool:
     Path("strategies").mkdir(exist_ok=True)
     Path("tests").mkdir(exist_ok=True)
 
-    # Pre-create the strategy directory so aider has a target directory
     strategy_dir = Path("strategies") / spec_name
     strategy_dir.mkdir(parents=True, exist_ok=True)
-    # DO NOT pre-create main.py — aider must create it fresh so hash comparison works
 
-    # Only pre-create the test stub — Aider needs an edit target for tests
+    # FIX: Pre-create main.py with a sentinel so aider has a real edit target.
+    # Previously this was left absent, causing aider to silently skip writing
+    # (exit 0, file not written) on all 4 tiers.
+    strategy_file = strategy_dir / "main.py"
+    if not strategy_file.exists():
+        strategy_file.write_text(_STRATEGY_SENTINEL, encoding="utf-8")
+
+    # Pre-create the test stub — Aider needs an edit target for tests.
     test_stub = Path("tests") / f"test_{spec_name}.py"
     if not test_stub.exists():
         test_stub.write_text(f'"""Test stub for {spec_name}."""\n', encoding="utf-8")
