@@ -41,7 +41,7 @@ _PROGRESSIVE_DEGRADATION_WINDOW: int = 5
 _MIN_TEST_PASS_RATE_TIER3: float = 0.70
 _BACKOFF_BASE_SECONDS: float = 2.0
 _BACKOFF_CAP_SECONDS: float = 60.0
-_MIN_STRATEGY_LINES: int = 20
+_MIN_STRATEGY_LINES: int = 80
 
 # Tier 1: Gemini 2.5 Flash — free tier, 500 req/day, no thinking
 _TIER1_MODEL: str = "gemini/gemini-2.5-flash"
@@ -96,11 +96,53 @@ class TierRunResult:
 
 
 def _build_aider_prompt(spec_file: Path, spec_name: str) -> str:
+    # Load spec to include actual signal strings verbatim in the prompt.
+    try:
+        with spec_file.open(encoding="utf-8") as fh:
+            spec_data: dict = yaml.safe_load(fh) or {}
+    except Exception:
+        spec_data = {}
+
+    signals: dict = spec_data.get("signals", {})
+    entry_signals: list = signals.get("entry", [])
+    exit_signals: list = signals.get("exit", [])
+    entry_str = " | ".join(str(s) for s in entry_signals) if entry_signals else "see spec file"
+    exit_str = " | ".join(str(s) for s in exit_signals) if exit_signals else "see spec file"
+
+    risk: dict = spec_data.get("risk_management", {})
+    stop_cfg = risk.get("stop_loss", {})
+    atr_period = 14  # default; spec may specify differently
+    atr_mult = float(stop_cfg.get("atr_multiplier", 2.0)) if isinstance(stop_cfg, dict) else 2.0
+
+    constraints: dict = spec_data.get("constraints", {})
+    max_hold = constraints.get("max_holding_minutes", 60)
+
     return (
-        f"Read the spec file at {spec_file} and CREATE a new QuantConnect LEAN algorithm "
-        f"in strategies/{spec_name}/main.py that satisfies all acceptance_criteria defined in the spec. "
-        f"Also write comprehensive unit tests in tests/test_{spec_name}.py. "
-        f"Do NOT modify any files outside the strategies/ and tests/ directories."
+        f"Read the spec file at {spec_file} carefully. "
+        f"CREATE a complete, production-quality QuantConnect LEAN algorithm "
+        f"in strategies/{spec_name}/main.py that fully implements ALL signals and rules in the spec.\n\n"
+        f"SPEC SIGNALS (implement these VERBATIM):\n"
+        f"  Entry:  {entry_str}\n"
+        f"  Exit:   {exit_str}\n\n"
+        f"MANDATORY REQUIREMENTS — the build will be REJECTED if any of these are missing:\n"
+        f"1. The file MUST subclass QCAlgorithm with a real Initialize() method that sets "
+        f"   start date, end date, and starting capital from the spec values.\n"
+        f"2. Initialize() MUST add the instrument(s) from the spec with the correct resolution.\n"
+        f"3. Initialize() MUST create ALL three indicators as specified:\n"
+        f"   (a) a VWAP indicator on the primary symbol,\n"
+        f"   (b) an ATR indicator with period {atr_period} (ATR({atr_period})) on the primary symbol, and\n"
+        f"   (c) a volume moving average (VolumeMA) — use a rolling window or SMA on the volume field.\n"
+        f"4. OnData() MUST implement the EXACT entry logic above from the spec. Do NOT paraphrase it.\n"
+        f"5. OnData() MUST implement the EXACT exit logic above from the spec, including the "
+        f"   {max_hold}-minute max hold time, the {atr_mult}*ATR stop-loss, and VWAP reversion exit.\n"
+        f"6. Close all positions at end of day (EOD) as required by the spec constraints.\n"
+        f"7. The file MUST contain at least 80 non-blank, non-comment lines of real Python logic. "
+        f"   A file containing only comments, stubs, `pass` statements, or `# TODO` markers "
+        f"   WILL BE REJECTED by the quality gate and the build will fail.\n"
+        f"8. Do NOT use `pass`, `raise NotImplementedError`, `# TODO`, `# placeholder`, or "
+        f"   ellipsis (...) as the body of any method.\n"
+        f"9. Also write comprehensive unit tests in tests/test_{spec_name}.py.\n"
+        f"10. Do NOT modify any files outside the strategies/ and tests/ directories."
     )
 
 
@@ -169,11 +211,14 @@ def _commit_and_push(
             f"[aider_builder] Strategy file not written by Aider: {strategy_file}. "
             "Aider exited 0 but produced no output file."
         )
-    actual_lines = len(strategy_path.read_text(encoding="utf-8").splitlines())
-    if actual_lines < _MIN_STRATEGY_LINES:
+    real_lines = [
+        ln for ln in strategy_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+    if len(real_lines) < _MIN_STRATEGY_LINES:
         raise FileNotFoundError(
-            f"[aider_builder] Strategy file has only {actual_lines} lines "
-            f"(minimum: {_MIN_STRATEGY_LINES}). Aider did not fill the stub."
+            f"[aider_builder] Strategy file has only {len(real_lines)} non-blank, non-comment lines "
+            f"(minimum: {_MIN_STRATEGY_LINES}). Aider produced a stub or skeleton — rejecting."
         )
     # BUG FIX: detect unchanged-file false-success.
     # If aider exited 0 but the file is byte-for-byte identical to what existed
@@ -885,27 +930,23 @@ def build(spec_file_str: str) -> bool:
             print(f"[aider_builder] Escalating to Tier {tier_num + 1} ({next_label})...")
 
     print(
-        "[aider_builder] All 4 tiers exhausted — writing stub strategy file.",
+        "[aider_builder] FATAL: All 4 tiers exhausted — no real strategy was produced.",
         file=sys.stderr,
     )
-    stub_path = _write_stub_strategy(spec_file, spec_name, spec_data)
     print(
-        f"[aider_builder] WARNING: stub strategy written to {stub_path}. "
-        "Replace with real implementation before production use.",
+        "[aider_builder] The pipeline MUST fail. A stub strategy is NOT a valid build outcome.",
         file=sys.stderr,
     )
-    _commit_and_push(spec_name, 4, last_model)
     _write_step_summary(
         spec_file_str,
         spec_name,
         last_model,
         4,
         total_iterations,
-        True,
+        False,
         failure_details=(
-            "All 4 model tiers were exhausted. A minimal stub strategy was written.\n"
-            f"Stub path: {stub_path}\n"
-            "Replace with a real implementation before production use."
+            "All 4 model tiers were exhausted. No real strategy was produced.\n"
+            "The build has FAILED. Manual intervention is required."
         ),
     )
     return False

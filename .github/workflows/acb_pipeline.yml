@@ -416,7 +416,6 @@ jobs:
         id: qc-upload-eval
         if: steps.aider-build.outcome == 'success'
         env:
-          QC_MCP_BASE_URL: "http://localhost:8000/mcp"
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
           QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
         run: |
