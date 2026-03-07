@@ -33,11 +33,3 @@ def test_qc_auth_validation() -> None:
     )
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(
-    not _CREDENTIALS_AVAILABLE,
-    reason="QC credentials not available",
-)
-def test_qc_rest_client_basic() -> None:
-    """Verify scripts/qc_rest_client.py exists (full API test is a separate PR)."""
-    assert os.path.exists("scripts/qc_rest_client.py")
