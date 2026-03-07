@@ -60,8 +60,8 @@ notes: |
   Success criteria for this probe run:
     1. spec_validator exits 0 (no SVR errors)
     2. strategy_reviewer returns PASS or WARN (not BLOCK)
-    3. aider_builder produces a non-empty strategies/vwap_probe.py
+    3. aider_builder produces a non-empty strategies/vwap_probe/main.py
     4. pre_commit_gates passes or surfaces clear fixable errors
     5. qc_upload_eval runs (stub or real) without crash
   If all 5 pass -> proceed to full vwap-mean-reversion-mes-tqqq.yaml.
-  # retriggered: 2026-03-07T01:57 UTC - secret name fix (INFINITY_PUBLIC_TO_PRIVATE_ACCESS)
+  # retriggered: 2026-03-07T03:22 UTC - all strategies/{spec_name}/main.py paths confirmed on main
