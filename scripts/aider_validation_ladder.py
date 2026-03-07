@@ -459,6 +459,9 @@ def run_level1(
         output_log_path = Path("/tmp/aider_iteration_log_level1.json")
     if result_dir is None:
         result_dir = Path("/tmp")
+    if result_dir.exists() and not result_dir.is_dir():
+        raise NotADirectoryError(f"result_dir exists but is not a directory: {result_dir}")
+    result_dir.mkdir(parents=True, exist_ok=True)
 
     use_stub = not (_QC_USER_ID and _QC_API_TOKEN)
     if use_stub:
