@@ -1,0 +1,45 @@
+name: Integration Tests
+
+on:
+  push:
+    branches:
+      - feature/acb-e2e-rebuild
+  pull_request:
+    branches:
+      - feature/acb-e2e-rebuild
+  workflow_dispatch:
+
+jobs:
+  qc-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -c constraints.txt
+          pip install pytest
+
+      - name: Validate QC Auth
+        env:
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+        run: |
+          python scripts/validate_qc_auth.py
+
+      - name: Run integration tests
+        env:
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+        run: |
+          pytest tests/test_qc_integration.py -v -m integration
