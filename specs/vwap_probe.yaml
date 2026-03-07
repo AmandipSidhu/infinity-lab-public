@@ -65,3 +65,4 @@ notes: |
     5. qc_upload_eval runs (stub or real) without crash
   If all 5 pass -> proceed to full vwap-mean-reversion-mes-tqqq.yaml.
   # retriggered: 2026-03-06T21:19 UTC after UNI-83/84/85/86 fully merged (MCP tools + stub fix + backtest metrics)
+# e2e-trigger: 2026-03-07
