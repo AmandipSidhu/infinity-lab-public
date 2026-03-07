@@ -28,8 +28,6 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt -c constraints.txt
-          pip install radon bandit
-
       - name: Run quality gates
         run: |
           python scripts/pre_commit_gates.py \
