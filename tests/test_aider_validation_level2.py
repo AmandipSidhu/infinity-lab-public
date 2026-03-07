@@ -488,18 +488,16 @@ class TestMain:
             rc = main(["--skip-dependency-check"])
         assert rc == 1
 
-    def test_exit_0_when_dependency_not_met(
+    def test_exit_1_when_dependency_not_met_non_blocking(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Missing Phase 4A log → non-blocking exit 0 (returns False but exit 0)."""
-        # Note: run_validation returns False when dep not met, main returns 0
-        # because run_validation returns False and main does: return 0 if passed else 1
-        # → non-blocking (exit 1)
-        # Actually per the contract: main returns 0 if passed else 1.
-        # When dep not met, run_validation returns False → main returns 1.
-        # But the script is non-blocking from a CI perspective (stub log is written).
+        """Missing Phase 4A log → dependency failure (exit 1) but CI-non-blocking."""
+        # Contract: main() returns 0 if validation passed, else 1.
+        # When the Phase 4A dependency is not met, run_validation() returns False,
+        # so main() returns 1, but a stub log is still written so CI can treat this
+        # as a non-blocking failure.
         self._make_tier_files(tmp_path, monkeypatch)
-        # _PHASE4A_LOG is redirected to nonexistent path
+        # _PHASE4A_LOG is redirected to a nonexistent path by default in this test
         rc = main([])
         # Dependency not met → run_validation returns False → main exit 1
         assert rc == 1
