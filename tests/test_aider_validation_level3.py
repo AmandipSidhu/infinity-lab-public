@@ -128,18 +128,20 @@ class TestRunValidationDryRun:
         log = lvl3.run_validation(dry_run=True)
         assert isinstance(log["convergence"], bool)
 
-    def test_iteration_log_written_to_tmp(self) -> None:
-        lvl3.run_validation(dry_run=True)
-        log_path = Path("/tmp/aider_iteration_log_level3.json")
+    def test_iteration_log_written_to_tmp(self, tmp_path: Path) -> None:
+        with patch.object(lvl3, "TMP_DIR", tmp_path):
+            lvl3.run_validation(dry_run=True)
+        log_path = tmp_path / "aider_iteration_log_level3.json"
         assert log_path.exists()
         data = json.loads(log_path.read_text(encoding="utf-8"))
         assert data["level"] == 3
 
-    def test_per_tier_result_files_written(self) -> None:
-        log = lvl3.run_validation(dry_run=True)
+    def test_per_tier_result_files_written(self, tmp_path: Path) -> None:
+        with patch.object(lvl3, "TMP_DIR", tmp_path):
+            log = lvl3.run_validation(dry_run=True)
         tiers_run = len(log["tiers"])
         for tier_num in range(1, tiers_run + 1):
-            result_path = Path(f"/tmp/aider_level3_tier{tier_num}_result.json")
+            result_path = tmp_path / f"aider_level3_tier{tier_num}_result.json"
             assert result_path.exists(), f"Missing result file for tier {tier_num}"
             data = json.loads(result_path.read_text(encoding="utf-8"))
             assert "sharpe_ratio" in data
