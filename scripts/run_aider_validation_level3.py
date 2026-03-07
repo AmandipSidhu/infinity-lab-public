@@ -2,7 +2,7 @@
 
 Phase 4C: Aider Validation Ladder — Level 3 (Hard)
 =====================================================
-18-asset Treasury ETF mean-reversion strategy with z-score entry and
+19-asset Treasury ETF mean-reversion strategy with z-score entry and
 InsightWeightingPortfolioConstructionModel.
 
 Deliverables
