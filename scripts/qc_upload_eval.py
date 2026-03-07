@@ -2,7 +2,7 @@
 """QuantConnect Upload & Backtest Evaluation — Step 6 of the ACB Pipeline.
 
 This script uses the QuantConnect MCP server for automated CI backtesting.
-For manual live deployment after human review, use ``qc_deploy_live.py``.
+For manual live deployment after human review, see ``infinity-lab-private``.
 
 Uploads the built strategy to the QuantConnect MCP Server running on
 ``QC_MCP_BASE_URL`` (default: ``http://localhost:8000/mcp``) via JSON-RPC 2.0

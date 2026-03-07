@@ -2,13 +2,16 @@
 
 ## Overview
 
-The ACB pipeline uses **two separate scripts** for QuantConnect integration,
+The ACB pipeline uses **two separate paths** for QuantConnect integration,
 each optimised for a different stage of the strategy lifecycle:
 
 | Script | Transport | Trigger | Purpose |
 |--------|-----------|---------|---------|
 | `scripts/qc_upload_eval.py` | lean-cli (local Docker) | Automated CI | Fast validation backtest |
-| `scripts/qc_deploy_live.py` | REST API v2 | Manual / human-approved | Live deployment |
+| `qc_deploy_live.py` (private repo) | REST API v2 | Manual / human-approved | Live deployment |
+
+> **Note:** `qc_deploy_live.py` has been moved to `infinity-lab-private`.
+> Live deployment is manual only and must never run from this public repository.
 
 ---
 
@@ -47,55 +50,19 @@ If `lean backtest` exits non-zero, the step:
 
 ## Path 2 — Human-Approved Live Deployment (REST API)
 
-**Script**: `scripts/qc_deploy_live.py`
-
-**Used by**: Manual invocation after human review and approval
+> **Script location:** `qc_deploy_live.py` has been moved to `infinity-lab-private`.
+> Live deployment is manual only — it must never run from this public repository.
 
 ### How it works
 
 1. A human reviews the strategy (CI report, pre-commit gates, backtest stats).
-2. After approval, `qc_deploy_live.py` is run locally or in a separate
-   manual workflow dispatch.
+2. After approval, `qc_deploy_live.py` is run manually from `infinity-lab-private`.
 3. The script:
    - Creates a new QC project via `POST /projects/create`
    - Uploads the strategy as `main.py` via `POST /files/create`
    - Optionally starts live trading via `POST /live/create`
      (paper trading by default)
 4. Returns the project URL and, if live trading was started, the live algo ID.
-
-### Usage
-
-```bash
-# Upload only (no live trading)
-python scripts/qc_deploy_live.py \
-    --strategy strategies/my_strategy.py \
-    --project-name "My Approved Strategy v2"
-
-# Upload and start paper live trading
-python scripts/qc_deploy_live.py \
-    --strategy strategies/my_strategy.py \
-    --start-live
-
-# Write result to JSON file
-python scripts/qc_deploy_live.py \
-    --strategy strategies/my_strategy.py \
-    --output /tmp/deploy_result.json
-```
-
-### Environment variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `QC_USER_ID` | Yes | QuantConnect user ID |
-| `QC_API_TOKEN` | Yes | QuantConnect API token |
-
-### Exit codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Upload (and optional live start) succeeded |
-| 1 | API or network error |
-| 2 | Invalid arguments, file not found, or missing credentials |
 
 ---
 
@@ -118,7 +85,7 @@ Push spec → CI triggers
     │
     └─ Human reviews the CI report
            │
-           ├─ Approved? → run qc_deploy_live.py (REST API → live deployment)
+           ├─ Approved? → run qc_deploy_live.py from infinity-lab-private (manual only)
            └─ Rejected? → iterate on spec or strategy
 ```
 

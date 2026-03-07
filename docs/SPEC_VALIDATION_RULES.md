@@ -3,7 +3,7 @@
 This document is the formal specification for all 56 deterministic validation rules implemented in `scripts/spec_validator.py`. Rules are divided into **Errors** (SVR-E) and **Warnings** (SVR-W).
 
 - **ERROR**: Spec is rejected. Build fails (`exit code 1`). Must be fixed before proceeding.
-- **WARNING**: Spec has a risky or incomplete element. Build continues but the ACK gate previously required human acknowledgment. [DEPRECATED in pipeline — warnings are surfaced in logs only. See ack_gate.py]
+- **WARNING**: Spec has a risky or incomplete element. Build continues but warnings are surfaced in logs only.
 
 ---
 

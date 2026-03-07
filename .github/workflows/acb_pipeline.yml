@@ -414,15 +414,6 @@ jobs:
           path: /tmp/pre_commit_gates_${{ steps.spec-name.outputs.spec_name }}.json
           if-no-files-found: warn
 
-      - name: Upload pre-commit gates output
-        id: upload-pre-commit-gates-output
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pre-commit-gates-output
-          path: /tmp/pre_commit_gates_output.json
-          if-no-files-found: warn
-
       - name: QC Upload and Backtest
         id: qc-upload-eval
         if: steps.aider-build.outcome == 'success'
@@ -435,6 +426,28 @@ jobs:
             --spec "${{ matrix.spec_file }}" \
             --strategy "strategies/${{ steps.spec-name.outputs.spec_name }}.py" \
             --output /tmp/qc_eval_output.json
+
+      - name: QC Promote to permanent project
+        id: qc-promote
+        if: steps.qc-upload-eval.outcome == 'success'
+        env:
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+        run: |
+          python scripts/qc_promote.py \
+            --spec-stem "${{ steps.spec-name.outputs.spec_name }}" \
+            --strategy-file "strategies/${{ steps.spec-name.outputs.spec_name }}.py" \
+            --qc-user-id "${{ secrets.QC_USER_ID }}" \
+            --qc-api-token "${{ secrets.QC_API_TOKEN }}" \
+            > /tmp/qc_project.json
+
+      - name: Upload QC promote result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qc-promote-result-${{ steps.spec-name.outputs.spec_name }}
+          path: /tmp/qc_project.json
+          if-no-files-found: warn
 
       - name: Human review and artifacts
         id: human-review
