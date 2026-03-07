@@ -1,5 +1,5 @@
 # vwap_probe.yaml
-# PURPOSE: Minimal pipeline probe — NOT the production VWAP strategy.
+# PURPOSE: Minimal pipeline probe - NOT the production VWAP strategy.
 # Used to validate Aider build quality and QC backtest loop before
 # committing the full vwap-mean-reversion-mes-tqqq spec.
 # Once pipeline E2E is confirmed healthy, this spec is superseded.
@@ -55,7 +55,7 @@ assumptions:
   slippage: 0.0005
 
 notes: |
-  Pipeline probe only. Intentionally simple — one entry condition,
+  Pipeline probe only. Intentionally simple - one entry condition,
   one exit condition, no regime modes.
   Success criteria for this probe run:
     1. spec_validator exits 0 (no SVR errors)
@@ -64,4 +64,4 @@ notes: |
     4. pre_commit_gates passes or surfaces clear fixable errors
     5. qc_upload_eval runs (stub or real) without crash
   If all 5 pass -> proceed to full vwap-mean-reversion-mes-tqqq.yaml.
-  # retriggered: 2026-03-06T21:19 UTC after UNI-83/84/85/86 fully merged (MCP tools + stub fix + backtest metrics)
+  # retriggered: 2026-03-07T01:57 UTC - secret name fix (INFINITY_PUBLIC_TO_PRIVATE_ACCESS)
