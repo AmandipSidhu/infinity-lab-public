@@ -366,6 +366,7 @@ jobs:
       - name: Lean local backtest
         id: lean-backtest
         if: steps.aider-build.outcome == 'success'
+        continue-on-error: true  # lean CLI requires Docker+lean init scaffold; failure is non-blocking
         shell: bash
         run: |
           set +e
@@ -416,7 +417,6 @@ jobs:
         id: qc-upload-eval
         if: steps.aider-build.outcome == 'success'
         env:
-          QC_MCP_BASE_URL: "http://localhost:8000/mcp"
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
           QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
         run: |
@@ -596,6 +596,7 @@ jobs:
               ("mcp-tool-discovery",         "Generate MCP tool manifest",             "${{ steps.mcp-tool-discovery.outcome }}"),
               ("aider-build",                "Aider build",                            "${{ steps.aider-build.outcome }}"),
               ("spec-name",                  "Compute spec name",                      "${{ steps.spec-name.outcome }}"),
+              ("lean-backtest",              "Lean local backtest",                    "${{ steps.lean-backtest.outcome }}"),
               ("pre-commit-gates",           "Pre-commit quality gates",               "${{ steps.pre-commit-gates.outcome }}"),
               ("qc-upload-eval",             "QC Upload and Backtest",                 "${{ steps.qc-upload-eval.outcome }}"),
               ("human-review",               "Human review and artifacts",             "${{ steps.human-review.outcome }}"),

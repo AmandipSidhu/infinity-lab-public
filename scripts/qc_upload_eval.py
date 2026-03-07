@@ -460,25 +460,24 @@ def main(argv: list[str] | None = None) -> int:
     try:
         summary = upload_and_evaluate(spec_file, strategy_file)
     except MCPConnectionError as exc:
-        # QC REST API unreachable — non-blocking stub
+        # QC REST API unreachable — credentials are set but server is not responding.
+        # This is a hard failure: the issue mandates a real backtest when credentials are present.
         print(
-            f"[qc_upload_eval] QC REST API unreachable ({exc}) — writing stub result.",
+            f"[qc_upload_eval] QC REST API unreachable: {exc}",
             file=sys.stderr,
         )
-        stub_conn: dict[str, Any] = {
+        connection_error_result: dict[str, Any] = {
             "spec_file": str(spec_file),
             "strategy_file": str(strategy_file),
-            "project_id": "stub",
-            "backtest_id": "stub",
-            "result": "PASS",
-            "passed": True,
-            "violation_count": 0,
+            "result": "FAIL",
+            "passed": False,
+            "error": f"QC REST API unreachable — cannot complete backtest: {exc}",
             "violations": [],
+            "violation_count": 0,
             "backtest_stats": {},
-            "note": f"QC REST API unreachable — evaluation skipped: {exc}",
         }
-        _write(stub_conn)
-        return 0
+        _write(connection_error_result)
+        return 1
     except RuntimeError as exc:
         print(f"[qc_upload_eval] QC REST API error: {exc}", file=sys.stderr)
         error_result: dict[str, Any] = {

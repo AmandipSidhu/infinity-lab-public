@@ -3,7 +3,7 @@
 
 Tier ladder (cheapest-first, all Gemini / Google AI Studio):
   Tier 1 — gemini/gemini-2.5-flash          (free tier, 500 RPD, thinking OFF)
-  Tier 2 — gemini/gemini-2.5-flash-lite     (free tier, separate quota pool)
+  Tier 2 — gemini/gemini-2.0-flash-lite     (free tier, separate quota pool)
   Tier 3 — gemini/gemini-2.5-flash          (thinking budget ON, reasoning mode)
   Tier 4 — gemini/gemini-2.5-pro            (paid, nuclear option)
 
@@ -41,25 +41,29 @@ _PROGRESSIVE_DEGRADATION_WINDOW: int = 5
 _MIN_TEST_PASS_RATE_TIER3: float = 0.70
 _BACKOFF_BASE_SECONDS: float = 2.0
 _BACKOFF_CAP_SECONDS: float = 60.0
-_MIN_STRATEGY_LINES: int = 20
+_MIN_STRATEGY_LINES: int = 80
 
 # Tier 1: Gemini 2.5 Flash — free tier, 500 req/day, no thinking
 _TIER1_MODEL: str = "gemini/gemini-2.5-flash"
 # Tier 2: Gemini 2.5 Flash-Lite — free tier, separate quota pool
-_TIER2_MODEL: str = "gemini/gemini-2.5-flash-lite"
+_TIER2_MODEL: str = "gemini/gemini-2.0-flash-lite"
 # Tier 3: Gemini 2.5 Flash with thinking budget — reasoning mode, still free tier
 _TIER3_MODEL: str = "gemini/gemini-2.5-flash"
 _TIER3_THINKING_BUDGET: int = 8192  # tokens allocated to thinking chain
 # Tier 4: Gemini 2.5 Pro — paid, final escalation (replaces Opus; GEMINI_API_KEY already in CI)
 _TIER4_MODEL: str = "gemini/gemini-2.5-pro"
 
-# Subprocess timeout (seconds) for free-tier calls.
-_TIER1_SUBPROCESS_TIMEOUT: int = 60
-_TIER2_SUBPROCESS_TIMEOUT: int = 60
+# Subprocess timeout (seconds).
+# FIX: free-tier Gemini cold starts routinely exceed 60 s — bumped to 300 s.
+_TIER1_SUBPROCESS_TIMEOUT: int = 300
+_TIER2_SUBPROCESS_TIMEOUT: int = 300
 # Tier 3 uses thinking — allow more wall time.
-_TIER3_SUBPROCESS_TIMEOUT: int = 120
+_TIER3_SUBPROCESS_TIMEOUT: int = 300
 # Tier 4 uses Pro — slower, allow more wall time.
-_TIER4_SUBPROCESS_TIMEOUT: int = 180
+_TIER4_SUBPROCESS_TIMEOUT: int = 600
+
+# Sentinel written to main.py before aider runs so it has a real edit target.
+_STRATEGY_SENTINEL: str = "# ACB placeholder — aider will overwrite this file\n"
 
 
 # ---------------------------------------------------------------------------
@@ -96,11 +100,53 @@ class TierRunResult:
 
 
 def _build_aider_prompt(spec_file: Path, spec_name: str) -> str:
+    # Load spec to include actual signal strings verbatim in the prompt.
+    try:
+        with spec_file.open(encoding="utf-8") as fh:
+            spec_data: dict = yaml.safe_load(fh) or {}
+    except Exception:
+        spec_data = {}
+
+    signals: dict = spec_data.get("signals", {})
+    entry_signals: list = signals.get("entry", [])
+    exit_signals: list = signals.get("exit", [])
+    entry_str = " | ".join(str(s) for s in entry_signals) if entry_signals else "see spec file"
+    exit_str = " | ".join(str(s) for s in exit_signals) if exit_signals else "see spec file"
+
+    risk: dict = spec_data.get("risk_management", {})
+    stop_cfg = risk.get("stop_loss", {})
+    atr_period = 14  # default; spec may specify differently
+    atr_mult = float(stop_cfg.get("atr_multiplier", 2.0)) if isinstance(stop_cfg, dict) else 2.0
+
+    constraints: dict = spec_data.get("constraints", {})
+    max_hold = constraints.get("max_holding_minutes", 60)
+
     return (
-        f"Read the spec file at {spec_file} and CREATE a new QuantConnect LEAN algorithm "
-        f"in strategies/{spec_name}/main.py that satisfies all acceptance_criteria defined in the spec. "
-        f"Also write comprehensive unit tests in tests/test_{spec_name}.py. "
-        f"Do NOT modify any files outside the strategies/ and tests/ directories."
+        f"Read the spec file at {spec_file} carefully. "
+        f"CREATE a complete, production-quality QuantConnect LEAN algorithm "
+        f"in strategies/{spec_name}/main.py that fully implements ALL signals and rules in the spec.\n\n"
+        f"SPEC SIGNALS (implement these VERBATIM):\n"
+        f"  Entry:  {entry_str}\n"
+        f"  Exit:   {exit_str}\n\n"
+        f"MANDATORY REQUIREMENTS — the build will be REJECTED if any of these are missing:\n"
+        f"1. The file MUST subclass QCAlgorithm with a real Initialize() method that sets "
+        f"   start date, end date, and starting capital from the spec values.\n"
+        f"2. Initialize() MUST add the instrument(s) from the spec with the correct resolution.\n"
+        f"3. Initialize() MUST create ALL three indicators as specified:\n"
+        f"   (a) a VWAP indicator on the primary symbol,\n"
+        f"   (b) an ATR indicator with period {atr_period} (ATR({atr_period})) on the primary symbol, and\n"
+        f"   (c) a volume moving average (VolumeMA) — use a rolling window or SMA on the volume field.\n"
+        f"4. OnData() MUST implement the EXACT entry logic above from the spec. Do NOT paraphrase it.\n"
+        f"5. OnData() MUST implement the EXACT exit logic above from the spec, including the "
+        f"   {max_hold}-minute max hold time, the {atr_mult}*ATR stop-loss, and VWAP reversion exit.\n"
+        f"6. Close all positions at end of day (EOD) as required by the spec constraints.\n"
+        f"7. The file MUST contain at least 80 non-blank, non-comment lines of real Python logic. "
+        f"   A file containing only comments, stubs, `pass` statements, or `# TODO` markers "
+        f"   WILL BE REJECTED by the quality gate and the build will fail.\n"
+        f"8. Do NOT use `pass`, `raise NotImplementedError`, `# TODO`, `# placeholder`, or "
+        f"   ellipsis (...) as the body of any method.\n"
+        f"9. Also write comprehensive unit tests in tests/test_{spec_name}.py.\n"
+        f"10. Do NOT modify any files outside the strategies/ and tests/ directories."
     )
 
 
@@ -118,6 +164,10 @@ def _build_aider_cmd(
         "--model", model,
         "--yes",
         "--no-git",
+        # FIX: tell aider it is allowed to create/overwrite the strategy file.
+        # Without --new-file aider may refuse to touch a path it did not
+        # discover itself, resulting in a silent exit-0 with no writes.
+        "--new-file", strategy_file,
         "--read", "config/aider_system_prompt_with_tools.txt",
         "--read", "config/qc_tools_manifest.json",
         "--message", prompt,
@@ -169,15 +219,18 @@ def _commit_and_push(
             f"[aider_builder] Strategy file not written by Aider: {strategy_file}. "
             "Aider exited 0 but produced no output file."
         )
-    actual_lines = len(strategy_path.read_text(encoding="utf-8").splitlines())
-    if actual_lines < _MIN_STRATEGY_LINES:
+    real_lines = [
+        ln for ln in strategy_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+    if len(real_lines) < _MIN_STRATEGY_LINES:
         raise FileNotFoundError(
-            f"[aider_builder] Strategy file has only {actual_lines} lines "
-            f"(minimum: {_MIN_STRATEGY_LINES}). Aider did not fill the stub."
+            f"[aider_builder] Strategy file has only {len(real_lines)} non-blank, non-comment lines "
+            f"(minimum: {_MIN_STRATEGY_LINES}). Aider produced a stub or skeleton — rejecting."
         )
-    # BUG FIX: detect unchanged-file false-success.
+    # Detect unchanged-file false-success.
     # If aider exited 0 but the file is byte-for-byte identical to what existed
-    # before, it made no changes. Treat as a failure so the tier escalates.
+    # before (including the sentinel), it made no real changes — escalate.
     if pre_run_hash is not None:
         post_run_hash = _file_sha256(strategy_path)
         if post_run_hash == pre_run_hash:
@@ -348,8 +401,6 @@ def _run_free_tier(
     rate_limit_retries = 0
 
     for iteration in range(_MAX_ITERATIONS):
-        # Snapshot the strategy file hash BEFORE running aider so we can
-        # detect an unchanged-file false-success after aider exits 0.
         strategy_path = Path(f"strategies/{spec_name}/main.py")
         pre_run_hash = _file_sha256(strategy_path)
 
@@ -607,14 +658,13 @@ def _write_stub_strategy(spec_file: Path, spec_name: str, spec_data: dict) -> Pa
     risk = spec_data.get("risk_management", {})
     stop_cfg = risk.get("stop_loss", {})
     if isinstance(stop_cfg, dict):
-        # e.g. { atr_multiplier: 2.0 }  — express as fraction of price for stub
         atr_mult = float(stop_cfg.get("atr_multiplier", 2.0))
-        stop_loss = round(atr_mult * 0.01, 4)  # rough proxy: 2xATR ~= 2% stop
+        stop_loss = round(atr_mult * 0.01, 4)
     else:
         stop_loss = float(stop_cfg) if stop_cfg else 0.05
     take_profit = float(risk.get("take_profit", 0.10))
     leverage = float(risk.get("leverage", 1.0))
-    max_position = min(leverage, 1.0)  # never exceed 100% for stub
+    max_position = min(leverage, 1.0)
 
     # --- constraints ------------------------------------------------------
     constraints = spec_data.get("constraints", {})
@@ -749,12 +799,10 @@ def _read_backtest_metrics(path: Path | None = None) -> dict[str, Any]:
         return {}
 
     merged: dict[str, Any] = {}
-    # Populate from sub-dicts first (Statistics, then RuntimeStatistics)
     for sub_key in ("Statistics", "RuntimeStatistics"):
         sub = data.get(sub_key)
         if isinstance(sub, dict):
             merged.update(sub)
-    # Top-level fallback: add keys not already populated from sub-dicts
     for k, v in data.items():
         if k not in ("Statistics", "RuntimeStatistics") and k not in merged:
             merged[k] = v
@@ -831,14 +879,17 @@ def build(spec_file_str: str) -> bool:
     Path("strategies").mkdir(exist_ok=True)
     Path("tests").mkdir(exist_ok=True)
 
-    # Pre-create the strategy directory so aider has an edit target
     strategy_dir = Path("strategies") / spec_name
     strategy_dir.mkdir(parents=True, exist_ok=True)
-    strategy_stub = strategy_dir / "main.py"
-    if not strategy_stub.exists():
-        strategy_stub.write_text(f'"""Strategy stub for {spec_name}."""\n', encoding="utf-8")
 
-    # Only pre-create the test stub — Aider needs an edit target for tests
+    # FIX: Pre-create main.py with a sentinel so aider has a real edit target.
+    # Previously this was left absent, causing aider to silently skip writing
+    # (exit 0, file not written) on all 4 tiers.
+    strategy_file = strategy_dir / "main.py"
+    if not strategy_file.exists():
+        strategy_file.write_text(_STRATEGY_SENTINEL, encoding="utf-8")
+
+    # Pre-create the test stub — Aider needs an edit target for tests.
     test_stub = Path("tests") / f"test_{spec_name}.py"
     if not test_stub.exists():
         test_stub.write_text(f'"""Test stub for {spec_name}."""\n', encoding="utf-8")
@@ -885,27 +936,23 @@ def build(spec_file_str: str) -> bool:
             print(f"[aider_builder] Escalating to Tier {tier_num + 1} ({next_label})...")
 
     print(
-        "[aider_builder] All 4 tiers exhausted — writing stub strategy file.",
+        "[aider_builder] FATAL: All 4 tiers exhausted — no real strategy was produced.",
         file=sys.stderr,
     )
-    stub_path = _write_stub_strategy(spec_file, spec_name, spec_data)
     print(
-        f"[aider_builder] WARNING: stub strategy written to {stub_path}. "
-        "Replace with real implementation before production use.",
+        "[aider_builder] The pipeline MUST fail. A stub strategy is NOT a valid build outcome.",
         file=sys.stderr,
     )
-    _commit_and_push(spec_name, 4, last_model)
     _write_step_summary(
         spec_file_str,
         spec_name,
         last_model,
         4,
         total_iterations,
-        True,
+        False,
         failure_details=(
-            "All 4 model tiers were exhausted. A minimal stub strategy was written.\n"
-            f"Stub path: {stub_path}\n"
-            "Replace with a real implementation before production use."
+            "All 4 model tiers were exhausted. No real strategy was produced.\n"
+            "The build has FAILED. Manual intervention is required."
         ),
     )
     return False
