@@ -496,6 +496,15 @@ def poll_backtest(
         )
 
         if completed or progress >= 1.0:
+            # Diagnostic: log statistics keys to identify correct total_trades key
+            for sub_key in ("statistics", "Statistics", "runtimeStatistics", "RuntimeStatistics"):
+                sub = result.get(sub_key)
+                if isinstance(sub, dict):
+                    print(f"[qc_rest_client] {sub_key} keys: {list(sub.keys())}", file=sys.stderr)
+                    # Print any key that looks trade-related
+                    for k, v in sub.items():
+                        if "trade" in k.lower() or "order" in k.lower():
+                            print(f"[qc_rest_client]   {k!r}: {v!r}", file=sys.stderr)
             return result
 
         remaining = max(0.0, deadline - time.time())
@@ -613,8 +622,17 @@ def run_backtest(
     )
     total_trades = _extract_int_stat(
         backtest_result,
-        "TotalNumberOfTrades", "total_trades", "Total Trades",
-        "NumberOfTrades", "Trades",
+        # QC REST API variants (probe all)
+        "TotalNumberOfTrades",
+        "Total Number of Trades",
+        "Total Trades",
+        "TotalTrades",
+        "totalTrades",
+        "total_trades",
+        "NumberOfTrades",
+        "Trades",
+        "TradeCount",
+        "tradeCount",
     )
 
     backtest_status = "Completed" if backtest_result.get(
