@@ -632,27 +632,27 @@ def _write_stub_strategy(spec_file: Path, spec_name: str, spec_data: dict) -> Pa
 
     hold_logic = ""
     if max_hold_minutes > 0:
-        hold_logic = f"""
-    def _check_max_hold(self) -> None:
-        """Exit if the position has been held longer than {max_hold_minutes} minutes."""
-        if self._entry_time is None:
-            return
-        elapsed = (self.Time - self._entry_time).total_seconds() / 60
-        if elapsed >= {max_hold_minutes}:
-            self.Liquidate(self._symbol)
-            self._entry_price = None
-            self._entry_time = None
-"""
+        hold_logic = (
+            f"\n    def _check_max_hold(self) -> None:\n"
+            f"        'Exit if the position has been held longer than {max_hold_minutes} minutes.'\n"
+            f"        if self._entry_time is None:\n"
+            f"            return\n"
+            f"        elapsed = (self.Time - self._entry_time).total_seconds() / 60\n"
+            f"        if elapsed >= {max_hold_minutes}:\n"
+            f"            self.Liquidate(self._symbol)\n"
+            f"            self._entry_price = None\n"
+            f"            self._entry_time = None\n"
+        )
 
     eod_logic = ""
     if close_eod:
-        eod_logic = """
-    def OnEndOfDay(self, symbol) -> None:
-        """Close all positions at end of day as required by spec."""
-        self.Liquidate()
-        self._entry_price = None
-        self._entry_time = None
-"""
+        eod_logic = (
+            "\n    def OnEndOfDay(self, symbol) -> None:\n"
+            "        'Close all positions at end of day as required by spec.'\n"
+            "        self.Liquidate()\n"
+            "        self._entry_price = None\n"
+            "        self._entry_time = None\n"
+        )
 
     stub_code = f'''"""ACB-generated stub strategy for {spec_name}.
 
