@@ -254,7 +254,7 @@ def run_validation(dry_run: bool = False) -> dict[str, Any]:
     if passed:
         ceiling_analysis = (
             "Level 3 PASSED. Aider can handle framework-level complexity "
-            "(~150 lines, 18 assets, statistical calculations, InsightWeighting). "
+            "(~150 lines, 19 assets, statistical calculations, InsightWeighting). "
             "4 tiers sufficient for all strategy types."
         )
     else:
