@@ -1,0 +1,109 @@
+name: QC Backtest Pipeline
+
+on:
+  push:
+    paths:
+      - 'strategies/**/*.py'
+  workflow_dispatch:
+    inputs:
+      strategy_file:
+        description: 'Path to strategy file (e.g. strategies/reference/sma_crossover_simple.py)'
+        required: false
+        default: 'strategies/reference/sma_crossover_simple.py'
+
+jobs:
+  detect-strategy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      strategy_file: ${{ steps.get-strategy.outputs.strategy_file }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect strategy file
+        id: get-strategy
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.strategy_file }}" ]; then
+            STRATEGY="${{ inputs.strategy_file }}"
+          else
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.sha }}"
+            fallback_base() {
+              git fetch origin main --depth=1 2>/dev/null || echo "Warning: could not fetch origin/main" >&2
+              local base
+              if base=$(git merge-base HEAD origin/main 2>/dev/null); then
+                echo "Using merge-base with origin/main as BASE" >&2
+                echo "$base"
+              elif base=$(git rev-parse HEAD~1 2>/dev/null); then
+                echo "Using HEAD~1 as BASE" >&2
+                echo "$base"
+              else
+                echo "No reachable parent found; using empty-tree as BASE" >&2
+                echo ""
+              fi
+            }
+            if [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]]; then
+              BASE=$(fallback_base)
+            elif ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              BASE=$(fallback_base)
+            else
+              BASE="$BEFORE"
+            fi
+            if [ -z "$BASE" ]; then
+              BASE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+            fi
+            # Take the first changed strategy file; fall back to the reference if none detected.
+            STRATEGY=$(git diff --name-only "$BASE" "$AFTER" | { grep -E '^strategies/.*\.py$' || true; } | head -1)
+            if [ -z "$STRATEGY" ]; then
+              STRATEGY="strategies/reference/sma_crossover_simple.py"
+            fi
+          fi
+          echo "Resolved strategy file: $STRATEGY"
+          echo "strategy_file=$STRATEGY" >> "$GITHUB_OUTPUT"
+
+  qc-backtest:
+    needs: detect-strategy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -c constraints.txt
+
+      - name: Run quality gates
+        run: |
+          python scripts/pre_commit_gates.py \
+            --strategy ${{ needs.detect-strategy.outputs.strategy_file }} \
+            --output /tmp/pre_commit_gates.json
+
+      - name: Upload to QC and run backtest
+        env:
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+        run: |
+          python scripts/qc_rest_client.py \
+            --strategy ${{ needs.detect-strategy.outputs.strategy_file }} \
+            --qc-user-id $QC_USER_ID \
+            --qc-api-token $QC_API_TOKEN
+
+      - name: Upload backtest result as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-result
+          path: /tmp/backtest_result.json
+          if-no-files-found: error
