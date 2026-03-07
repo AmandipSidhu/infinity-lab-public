@@ -14,6 +14,7 @@ Exit codes:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -129,15 +130,36 @@ def _build_aider_cmd(
 
 
 # ---------------------------------------------------------------------------
+# File hash helper (used to detect unchanged-file false-success)
+# ---------------------------------------------------------------------------
+
+
+def _file_sha256(path: Path) -> str | None:
+    """Return the SHA-256 hex digest of *path*, or None if it does not exist."""
+    if not path.exists():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+# ---------------------------------------------------------------------------
 # Git commit helper
 # ---------------------------------------------------------------------------
 
 
-def _commit_and_push(spec_name: str, tier: int, model: str) -> None:
+def _commit_and_push(
+    spec_name: str,
+    tier: int,
+    model: str,
+    pre_run_hash: str | None = None,
+) -> None:
     """Stage, commit, and push the generated strategy and test files.
 
     Uses ``git diff --cached --quiet`` to skip the commit when there are no
     staged changes (e.g. aider wrote identical content on a retry).
+
+    ``pre_run_hash`` is the SHA-256 of the strategy file *before* aider ran.
+    If the file hash is identical to pre-run, aider made no changes — raise
+    FileNotFoundError so the tier is treated as a failure and escalation occurs.
     """
     strategy_file = f"strategies/{spec_name}.py"
     test_file = f"tests/test_{spec_name}.py"
@@ -153,6 +175,16 @@ def _commit_and_push(spec_name: str, tier: int, model: str) -> None:
             f"[aider_builder] Strategy file has only {actual_lines} lines "
             f"(minimum: {_MIN_STRATEGY_LINES}). Aider did not fill the stub."
         )
+    # BUG FIX: detect unchanged-file false-success.
+    # If aider exited 0 but the file is byte-for-byte identical to what existed
+    # before, it made no changes. Treat as a failure so the tier escalates.
+    if pre_run_hash is not None:
+        post_run_hash = _file_sha256(strategy_path)
+        if post_run_hash == pre_run_hash:
+            raise FileNotFoundError(
+                f"[aider_builder] Strategy file was not modified by Aider (hash unchanged: "
+                f"{pre_run_hash[:12]}…). Aider exited 0 but made no edits."
+            )
     subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
     subprocess.run(
         ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"],
@@ -316,6 +348,11 @@ def _run_free_tier(
     rate_limit_retries = 0
 
     for iteration in range(_MAX_ITERATIONS):
+        # Snapshot the strategy file hash BEFORE running aider so we can
+        # detect an unchanged-file false-success after aider exits 0.
+        strategy_path = Path(f"strategies/{spec_name}.py")
+        pre_run_hash = _file_sha256(strategy_path)
+
         try:
             result = _run_aider(
                 model, spec_file, spec_name, timeout=timeout, extra_args=extra_args
@@ -327,7 +364,7 @@ def _run_free_tier(
 
         if result.success:
             try:
-                _commit_and_push(spec_name, tier_num, model)
+                _commit_and_push(spec_name, tier_num, model, pre_run_hash=pre_run_hash)
             except FileNotFoundError as exc:
                 return TierRunResult(
                     False, tier_num, model, iteration + 1, "file_not_written", str(exc)
@@ -436,6 +473,9 @@ def run_tier_3(spec_file: Path, spec_name: str) -> TierRunResult:
     prev_pass_rate: float | None = None
 
     for iteration in range(_MAX_ITERATIONS):
+        strategy_path = Path(f"strategies/{spec_name}.py")
+        pre_run_hash = _file_sha256(strategy_path)
+
         try:
             result = _run_aider(
                 model,
@@ -451,7 +491,7 @@ def run_tier_3(spec_file: Path, spec_name: str) -> TierRunResult:
 
         if result.success:
             try:
-                _commit_and_push(spec_name, 3, model)
+                _commit_and_push(spec_name, 3, model, pre_run_hash=pre_run_hash)
             except FileNotFoundError as exc:
                 return TierRunResult(False, 3, model, iteration + 1, "file_not_written", str(exc))
             return TierRunResult(True, 3, model, iteration + 1, "", combined)
@@ -504,6 +544,9 @@ def run_tier_4(spec_file: Path, spec_name: str) -> TierRunResult:
     last_output = ""
 
     for iteration in range(_MAX_ITERATIONS):
+        strategy_path = Path(f"strategies/{spec_name}.py")
+        pre_run_hash = _file_sha256(strategy_path)
+
         try:
             result = _run_aider(model, spec_file, spec_name, timeout=_TIER4_SUBPROCESS_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -512,7 +555,7 @@ def run_tier_4(spec_file: Path, spec_name: str) -> TierRunResult:
 
         if result.success:
             try:
-                _commit_and_push(spec_name, 4, model)
+                _commit_and_push(spec_name, 4, model, pre_run_hash=pre_run_hash)
             except FileNotFoundError as exc:
                 return TierRunResult(False, 4, model, iteration + 1, "file_not_written", str(exc))
             return TierRunResult(True, 4, model, iteration + 1, "", last_output)
@@ -533,26 +576,83 @@ def _write_stub_strategy(spec_file: Path, spec_name: str, spec_data: dict) -> Pa
     The stub subclasses QCAlgorithm, implements Initialize() and OnData(), and
     uses values from the spec so downstream quality gates and QC upload can run.
     Returns the path to the written file.
-    """
-    bt = spec_data.get("strategy", {}).get("backtesting", {})
-    universe = spec_data.get("strategy", {}).get("universe", {})
-    risk = spec_data.get("strategy", {}).get("risk_management", {})
 
-    symbols = universe.get("symbols", ["SPY"])
-    primary_symbol = symbols[0] if symbols else "SPY"
-    initial_capital = int(bt.get("initial_capital", 10000))
-    stop_loss = float(risk.get("stop_loss", 0.05))
+    BUG FIX: spec field paths corrected.  The previous version read from a
+    non-existent ``strategy.backtesting`` / ``strategy.universe`` nesting.
+    The actual spec schema has ``capital``, ``data``, ``signals``, and
+    ``risk_management`` at the root level.
+    """
+    # --- capital ----------------------------------------------------------
+    capital = spec_data.get("capital", {})
+    initial_capital = int(capital.get("allocation_usd", 10000))
+
+    # --- data / universe --------------------------------------------------
+    data = spec_data.get("data", {})
+    instruments = data.get("instruments", ["SPY"])
+    primary_symbol = instruments[0] if instruments else "SPY"
+    start_date_str: str = str(data.get("start_date", "2020-01-01"))
+    end_date_str: str = str(data.get("end_date", "2024-12-31"))
+    resolution_str: str = str(data.get("resolution", "daily")).lower()
+    resolution_map = {
+        "minute": "Resolution.Minute",
+        "hour": "Resolution.Hour",
+        "daily": "Resolution.Daily",
+        "day": "Resolution.Daily",
+        "tick": "Resolution.Tick",
+        "second": "Resolution.Second",
+    }
+    qc_resolution = resolution_map.get(resolution_str, "Resolution.Daily")
+
+    # --- risk_management --------------------------------------------------
+    risk = spec_data.get("risk_management", {})
+    stop_cfg = risk.get("stop_loss", {})
+    if isinstance(stop_cfg, dict):
+        # e.g. { atr_multiplier: 2.0 }  — express as fraction of price for stub
+        atr_mult = float(stop_cfg.get("atr_multiplier", 2.0))
+        stop_loss = round(atr_mult * 0.01, 4)  # rough proxy: 2×ATR ≈ 2% stop
+    else:
+        stop_loss = float(stop_cfg) if stop_cfg else 0.05
     take_profit = float(risk.get("take_profit", 0.10))
-    max_position = float(risk.get("max_position_size", 0.10))
+    leverage = float(risk.get("leverage", 1.0))
+    max_position = min(leverage, 1.0)  # never exceed 100% for stub
+
+    # --- constraints ------------------------------------------------------
+    constraints = spec_data.get("constraints", {})
+    max_hold_minutes = int(constraints.get("max_holding_minutes", 0))
+    close_eod = bool(constraints.get("close_eod", False))
 
     def _date_parts(date_str: str) -> tuple[int, int, int]:
         parts = str(date_str).split("-")
         return int(parts[0]), int(parts[1]), int(parts[2])
 
-    sy, sm, sd = _date_parts(bt.get("start_date", "2020-01-01"))
-    ey, em, ed = _date_parts(bt.get("end_date", "2024-12-31"))
+    sy, sm, sd = _date_parts(start_date_str)
+    ey, em, ed = _date_parts(end_date_str)
 
     class_name = "".join(w.capitalize() for w in spec_name.replace("-", "_").split("_"))
+
+    hold_logic = ""
+    if max_hold_minutes > 0:
+        hold_logic = f"""
+    def _check_max_hold(self) -> None:
+        """"""Exit if the position has been held longer than {max_hold_minutes} minutes.""""""
+        if self._entry_time is None:
+            return
+        elapsed = (self.Time - self._entry_time).total_seconds() / 60
+        if elapsed >= {max_hold_minutes}:
+            self.Liquidate(self._symbol)
+            self._entry_price = None
+            self._entry_time = None
+"""
+
+    eod_logic = ""
+    if close_eod:
+        eod_logic = """
+    def OnEndOfDay(self, symbol) -> None:
+        """"""Close all positions at end of day as required by spec.""""""
+        self.Liquidate()
+        self._entry_price = None
+        self._entry_time = None
+"""
 
     stub_code = f'''"""ACB-generated stub strategy for {spec_name}.
 
@@ -575,13 +675,14 @@ class {class_name}(QCAlgorithm):
         self.SetStartDate({sy}, {sm}, {sd})
         self.SetEndDate({ey}, {em}, {ed})
         self.SetCash({initial_capital})
-        equity = self.AddEquity("{primary_symbol}", Resolution.Daily)
+        equity = self.AddEquity("{primary_symbol}", {qc_resolution})
         self._symbol = equity.Symbol
-        self._sma = self.SMA(self._symbol, 50, Resolution.Daily)
+        self._sma = self.SMA(self._symbol, 50, {qc_resolution})
         self._stop_loss = {stop_loss}
         self._take_profit = {take_profit}
         self._max_position = {max_position}
         self._entry_price = None
+        self._entry_time = None
 
     def OnData(self, data: Slice) -> None:
         """Execute momentum signals: enter above SMA50, exit below."""
@@ -593,8 +694,10 @@ class {class_name}(QCAlgorithm):
             if price > self._sma.Current.Value:
                 self.SetHoldings(self._symbol, self._max_position)
                 self._entry_price = price
+                self._entry_time = self.Time
         else:
             self._check_exit(price)
+            {"self._check_max_hold()" if max_hold_minutes > 0 else ""}
 
     def _check_exit(self, price: float) -> None:
         """Exit on SMA crossover, stop-loss, or take-profit."""
@@ -608,7 +711,8 @@ class {class_name}(QCAlgorithm):
         if below_sma or hit_stop or hit_tp:
             self.Liquidate(self._symbol)
             self._entry_price = None
-'''
+            self._entry_time = None
+{hold_logic}{eod_logic}'''
 
     output_path = Path("strategies") / f"{spec_name}.py"
     output_path.parent.mkdir(parents=True, exist_ok=True)
