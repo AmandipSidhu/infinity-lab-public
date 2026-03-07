@@ -20,7 +20,10 @@ Authentication:
   Header     : Timestamp: <unix_ts>
 
 Allowed QC API endpoints (hard constraint — no live/paper/portfolio endpoints):
-  /projects/create, /files/create, /files/update, /projects/read
+  /projects/create, /files/create, /projects/read
+
+  NOTE: files/update is intentionally excluded — ACB may only CREATE new QC
+  projects, never update or delete existing ones (ARCHITECTURE v4.5 §9.4).
 
 Usage:
   python scripts/qc_promote.py \\
@@ -31,7 +34,7 @@ Usage:
 
 Exit codes:
   0 — Promotion succeeded; qc_project.json written to stdout
-  1 — QC API error or network failure
+  1 — QC API error, network failure, or rejected project name
   2 — Invalid arguments or strategy file not found
 """
 
@@ -55,6 +58,17 @@ import requests
 _QC_BASE_URL: str = "https://www.quantconnect.com/api/v2"
 _REQUEST_TIMEOUT_SECONDS: int = 30
 
+# Hard constraint (ARCHITECTURE v4.5 §9.4):
+# ACB may CREATE new QC projects — never update or delete existing ones.
+# files/update is intentionally excluded.
+_ALLOWED_ENDPOINTS: frozenset[str] = frozenset(
+    {"projects/create", "files/create", "projects/read"}
+)
+
+# Guard: reject any project whose name matches paper-* or live-* patterns.
+# These are permanent strategies — ACB must never touch them.
+_PROTECTED_NAME_PATTERN = re.compile(r"^(paper|live)-", re.IGNORECASE)
+
 
 # ---------------------------------------------------------------------------
 # Authentication
@@ -74,6 +88,28 @@ def _qc_auth(user_id: str, api_token: str) -> tuple[dict[str, str], tuple[str, s
 # ---------------------------------------------------------------------------
 # REST API helpers (allowed endpoints only)
 # ---------------------------------------------------------------------------
+
+
+def _assert_allowed_endpoint(endpoint: str) -> None:
+    """Raise ValueError if *endpoint* is not in the allowed set."""
+    if endpoint not in _ALLOWED_ENDPOINTS:
+        raise ValueError(
+            f"Endpoint '{endpoint}' is not permitted. "
+            f"Allowed: {sorted(_ALLOWED_ENDPOINTS)}"
+        )
+
+
+def _assert_safe_project_name(project_name: str) -> None:
+    """Raise ValueError if *project_name* matches paper-* or live-* patterns.
+
+    ACB must never write to any project that has ever been paper or live
+    (ARCHITECTURE v4.5 §9.4 hard constraint).
+    """
+    if _PROTECTED_NAME_PATTERN.match(project_name):
+        raise ValueError(
+            f"Project name '{project_name}' matches a protected pattern "
+            "(paper-* or live-*). ACB may not write to paper or live projects."
+        )
 
 
 def _qc_post(
@@ -131,20 +167,6 @@ def _qc_get(
         errors = body.get("errors", [body.get("message", "unknown error")])
         raise RuntimeError(f"QC API returned error for {endpoint}: {errors}")
     return body
-
-
-_ALLOWED_ENDPOINTS: frozenset[str] = frozenset(
-    {"projects/create", "files/create", "files/update", "projects/read"}
-)
-
-
-def _assert_allowed_endpoint(endpoint: str) -> None:
-    """Raise ValueError if *endpoint* is not in the allowed set."""
-    if endpoint not in _ALLOWED_ENDPOINTS:
-        raise ValueError(
-            f"Endpoint '{endpoint}' is not permitted. "
-            f"Allowed: {sorted(_ALLOWED_ENDPOINTS)}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +238,9 @@ def promote(
     base_name = _stem_to_base_name(spec_stem)
     version = _get_next_version(base_name, user_id, api_token)
     project_name = f"{base_name}-v{version}"
+
+    # Hard constraint: never write to paper-* or live-* projects
+    _assert_safe_project_name(project_name)
 
     print(f"[qc_promote] Creating project '{project_name}'…", file=sys.stderr)
     body = _qc_post(
@@ -314,8 +339,8 @@ def main(argv: list[str] | None = None) -> int:
             user_id=user_id,
             api_token=api_token,
         )
-    except RuntimeError as exc:
-        print(f"[qc_promote] QC API error: {exc}", file=sys.stderr)
+    except (RuntimeError, ValueError) as exc:
+        print(f"[qc_promote] Error: {exc}", file=sys.stderr)
         return 1
 
     print(json.dumps(result, indent=2))

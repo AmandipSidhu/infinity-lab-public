@@ -10,11 +10,14 @@ strict JSON verdict:
         "concerns":   ["...", ...]
     }
 
-Model fallback chain (in order):
-    Tier 1 — Gemini 2.0 Flash    (google-generativeai)
-    Tier 2 — Gemini 1.5 Pro      (google-generativeai)
-    Tier 3 — gpt-4o-mini         (openai)
-    Tier 4 — Claude Opus          (anthropic)
+Model fallback chain (all-Gemini — ARCHITECTURE v4.5 §1 & §5):
+    Tier 1 — gemini/gemini-2.5-flash       (google-generativeai)
+    Tier 2 — gemini/gemini-2.5-flash-lite  (google-generativeai)
+    Tier 3 — gemini/gemini-2.5-flash       with thinking tokens
+    Tier 4 — gemini/gemini-2.5-pro         (google-generativeai)
+
+Only GEMINI_API_KEY (or GOOGLE_API_KEY) is required.
+ANTHROPIC_API_KEY and OPENAI_API_KEY are not used.
 
 Caching:
     SHA-256 of the raw YAML text is used as a cache key.
@@ -67,7 +70,6 @@ _FALLBACK_RESULT: dict[str, Any] = {
     ],
 }
 
-# FIXED: stub result returned when no API key is configured — advisory only, exits 0
 _NO_KEY_RESULT: dict[str, Any] = {
     "verdict": "PASS",
     "risk_level": "low",
@@ -126,11 +128,9 @@ def _save_cache(spec_hash: str, result: dict[str, Any]) -> None:
 
 def _extract_json_block(text: str) -> str:
     """Try to extract a JSON object from text that may contain surrounding prose."""
-    # Try to find a JSON block wrapped in ```json ... ``` fences
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
         return fenced.group(1)
-    # Fall back to finding the first {...} block
     brace = re.search(r"\{.*\}", text, re.DOTALL)
     if brace:
         return brace.group(0)
@@ -165,11 +165,11 @@ def _parse_and_validate(raw_text: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# AI tier callers
+# AI tier callers — all Gemini (ARCHITECTURE v4.5 §1)
 # ---------------------------------------------------------------------------
 
 
-def _call_gemini(model_name: str, spec_yaml: str) -> str:
+def _call_gemini(model_name: str, spec_yaml: str, thinking: bool = False) -> str:
     """Call Google Gemini via google-generativeai. Returns raw text."""
     import google.generativeai as genai  # type: ignore[import-untyped]
 
@@ -177,92 +177,57 @@ def _call_gemini(model_name: str, spec_yaml: str) -> str:
     if not api_key:
         raise EnvironmentError("GEMINI_API_KEY / GOOGLE_API_KEY is not set")
     genai.configure(api_key=api_key)
+
+    generation_config: dict[str, Any] = {}
+    if thinking:
+        # Enable thinking tokens for deeper reasoning on Tier 3
+        generation_config["thinking_config"] = {"thinking_budget": 2048}
+
     model = genai.GenerativeModel(
         model_name=model_name,
         system_instruction=_SYSTEM_PROMPT,
+        generation_config=generation_config if generation_config else None,
     )
     response = model.generate_content(spec_yaml)
     return response.text
 
 
-def _call_openai(model_name: str, spec_yaml: str) -> str:
-    """Call OpenAI via the openai SDK. Returns raw text."""
-    from openai import OpenAI  # type: ignore[import-untyped]
-
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise EnvironmentError("OPENAI_API_KEY is not set")
-    client = OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": spec_yaml},
-        ],
-        response_format={"type": "json_object"},
-    )
-    return response.choices[0].message.content or ""
-
-
-def _call_anthropic(model_name: str, spec_yaml: str) -> str:
-    """Call Anthropic Claude via the anthropic SDK. Returns raw text."""
-    import anthropic  # type: ignore[import-untyped]
-
-    # ANTHROPIC_API_KEY removed from CI — run locally with your own key
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise EnvironmentError("ANTHROPIC_API_KEY is not set")
-    client = anthropic.Anthropic(api_key=api_key)
-    message = client.messages.create(
-        model=model_name,
-        max_tokens=1024,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": spec_yaml}],
-    )
-    return message.content[0].text
-
-
 # ---------------------------------------------------------------------------
-# Repair helper — ask the same model to fix broken JSON
+# Repair helper
 # ---------------------------------------------------------------------------
 
 
-def _repair_json(raw_text: str, tier_caller: Any, *caller_args: Any) -> dict[str, Any]:
-    """Ask the tier's caller to repair the broken JSON. Raises on failure."""
+def _repair_json(raw_text: str, model_name: str, thinking: bool = False) -> dict[str, Any]:
+    """Ask the same Gemini model to repair broken JSON. Raises on failure."""
     repair_prompt = _REPAIR_PROMPT_TEMPLATE.format(raw=raw_text)
-    repaired_raw = tier_caller(*caller_args[:-1], repair_prompt)
+    repaired_raw = _call_gemini(model_name, repair_prompt, thinking=thinking)
     return _parse_and_validate(repaired_raw)
 
 
 # ---------------------------------------------------------------------------
-# Fallback chain
+# Fallback chain — all-Gemini ladder
 # ---------------------------------------------------------------------------
 
-# Tier definitions: (label, caller_attribute_name, model_name)
-_TIERS: list[tuple[str, str, str]] = [
-    ("Tier 1: Gemini 2.0 Flash", "_call_gemini", "gemini-2.0-flash"),
-    ("Tier 2: Gemini 1.5 Pro", "_call_gemini", "gemini-1.5-pro"),
-    ("Tier 3: gpt-4o-mini", "_call_openai", "gpt-4o-mini"),
-    ("Tier 4: Claude Opus", "_call_anthropic", "claude-opus-4-5"),
+# (label, model_name, thinking_tokens)
+_TIERS: list[tuple[str, str, bool]] = [
+    ("Tier 1: gemini-2.5-flash",      "gemini-2.5-flash",      False),
+    ("Tier 2: gemini-2.5-flash-lite", "gemini-2.5-flash-lite", False),
+    ("Tier 3: gemini-2.5-flash+think","gemini-2.5-flash",      True),
+    ("Tier 4: gemini-2.5-pro",        "gemini-2.5-pro",        False),
 ]
 
 
 def _run_fallback_chain(spec_yaml: str) -> dict[str, Any]:
     """
-    Try each tier in order. For each tier:
+    Try each Gemini tier in order. For each tier:
       1. Call the model.
-      2. If the JSON is invalid, attempt one repair call.
-      3. If repair also fails, log the error and move to the next tier.
+      2. If the JSON is invalid, attempt one repair call on the same model.
+      3. If repair also fails, move to the next tier.
     Returns the first successful validated result, or _FALLBACK_RESULT if all fail.
     """
-    import sys
-
-    _mod = sys.modules[__name__]
-
-    for tier_label, caller_name, model_name in _TIERS:
-        caller = getattr(_mod, caller_name)
+    for tier_label, model_name, thinking in _TIERS:
         try:
-            raw = caller(model_name, spec_yaml)
+            raw = _call_gemini(model_name, spec_yaml, thinking=thinking)
         except Exception as exc:
             print(f"[strategy_reviewer] {tier_label} call failed: {exc}", file=sys.stderr)
             continue
@@ -276,7 +241,7 @@ def _run_fallback_chain(spec_yaml: str) -> dict[str, Any]:
                 file=sys.stderr,
             )
             try:
-                return _repair_json(raw, caller, model_name, spec_yaml)
+                return _repair_json(raw, model_name, thinking=thinking)
             except Exception as repair_err:
                 print(
                     f"[strategy_reviewer] {tier_label} repair failed: {repair_err}",
@@ -297,19 +262,11 @@ def _run_fallback_chain(spec_yaml: str) -> dict[str, Any]:
 
 
 def review_spec(spec_yaml: str) -> dict[str, Any]:
-    """
-    Review a raw YAML string.
-
-    Checks the cache first; on a miss, runs the fallback chain and caches
-    the result.
-
-    Returns a validated result dict with keys: verdict, risk_level, concerns.
-    """
+    """Review a raw YAML string. Checks cache first; on miss runs fallback chain."""
     h = _spec_hash(spec_yaml)
     cached = _load_cache(h)
     if cached is not None:
         return cached
-
     result = _run_fallback_chain(spec_yaml)
     _save_cache(h, result)
     return result
@@ -349,16 +306,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     if not os.path.isfile(spec_path):
-        print(
-            json.dumps({"error": f"File not found: {spec_path}"}),
-            file=sys.stderr,
-        )
+        print(json.dumps({"error": f"File not found: {spec_path}"}), file=sys.stderr)
         return 2
 
     with open(spec_path, "r", encoding="utf-8") as fh:
         raw_yaml = fh.read()
 
-    # Validate the YAML is parseable before sending to AI
     try:
         parsed = yaml.safe_load(raw_yaml)
     except yaml.YAMLError as exc:
@@ -366,21 +319,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if not isinstance(parsed, dict):
-        print(
-            json.dumps({"error": f"YAML file did not parse to a mapping: {spec_path}"}),
-            file=sys.stderr,
-        )
+        print(json.dumps({"error": f"YAML file did not parse to a mapping: {spec_path}"}), file=sys.stderr)
         return 2
 
-    # FIXED: return no-key stub at the CLI level when no AI credentials are configured
-    # so CI does not time out waiting for API calls that have no chance of success.
-    # review_spec() itself is unchanged so unit tests can still mock _run_fallback_chain.
     gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not any([gemini_key, openai_key, anthropic_key]):
+    if not gemini_key:
         print(
-            "[strategy_reviewer] No API key configured — writing stub review.",
+            "[strategy_reviewer] No GEMINI_API_KEY configured — writing stub review.",
             file=sys.stderr,
         )
         result_data = dict(_NO_KEY_RESULT)
@@ -390,8 +335,6 @@ def main(argv: list[str] | None = None) -> int:
     output = dict(result_data)
     output["spec_file"] = spec_path
     output["reviewed_at"] = datetime.now(timezone.utc).isoformat()
-    # FIXED: add approved/score/reasoning fields alongside verdict/risk_level/concerns
-    # so both old (evaluate step) and new consumers get compatible output
     if "approved" not in output:
         output["approved"] = output.get("verdict") == "PASS"
     if "score" not in output:
@@ -399,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     if "reasoning" not in output:
         concerns = output.get("concerns", [])
         output["reasoning"] = concerns[0] if concerns else "Strategy reviewed."
+
     json_output = json.dumps(output, indent=2)
     if output_path:
         with open(output_path, "w", encoding="utf-8") as out_fh:
