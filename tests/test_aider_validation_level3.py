@@ -111,12 +111,12 @@ class TestRunValidationDryRun:
         log = lvl3.run_validation(dry_run=True)
         assert log["passed"] is True
 
-    def test_final_code_path_is_tier4(self) -> None:
+    def test_final_code_path_is_tier2(self) -> None:
         log = lvl3.run_validation(dry_run=True)
         # Dry-run synthetic sharpe: tier1=0.52 (fail), tier2=0.83 (pass)
         # → first passing tier is 2
         assert log["final_code_path"] is not None
-        assert "aider_level3_tier" in log["final_code_path"]
+        assert "aider_level3_tier2" in log["final_code_path"]
 
     def test_tiers_have_required_fields(self) -> None:
         log = lvl3.run_validation(dry_run=True)
