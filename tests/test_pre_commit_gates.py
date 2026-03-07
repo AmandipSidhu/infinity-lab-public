@@ -550,7 +550,7 @@ class TestReferenceStrategyGates:
         max_ccn = 0
         for blocks in data.values():
             for block in blocks:
-                if block.get("type") in ("function", "method"):
+                if block.get("type") in ("F", "M"):
                     ccn: int = block.get("complexity", 0)
                     if ccn > max_ccn:
                         max_ccn = ccn
