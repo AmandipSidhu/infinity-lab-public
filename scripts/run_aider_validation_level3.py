@@ -87,12 +87,15 @@ _TIER_ANALYSIS: dict[int, dict[str, Any]] = {
     },
     3: {
         "issue": (
-            "stale bars returned on some days because 30-day look-back window "
-            "includes weekends/holidays; no warmup guard causes early rebalances"
+            "stale daily bars on some sessions because History(..., 30, Resolution.Daily) "
+            "requests 30 trading-day bars and the most recent bar can still be the prior close; "
+            "no warmup guard causes early rebalances on insufficient history"
         ),
         "fix": (
-            "increase look-back buffer to 35 calendar days; "
-            "add SetWarmUp(35, Resolution.Daily) and IsWarmingUp guard"
+            "change the History call to use a calendar-based window (for example, "
+            "History(..., timedelta(days=35), Resolution.Daily)) so 30 trading bars are "
+            "available across weekends/holidays; add SetWarmUp(35, Resolution.Daily) and "
+            "an IsWarmingUp guard before generating insights"
         ),
     },
     4: {
