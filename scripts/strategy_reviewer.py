@@ -12,7 +12,7 @@ strict JSON verdict:
 
 Model fallback chain (in order, all Gemini / Google AI Studio):
     Tier 1 — gemini-2.5-flash       (google-generativeai, thinking OFF)
-    Tier 2 — gemini-2.5-flash-lite  (google-generativeai, separate quota pool)
+    Tier 2 — gemini-2.0-flash-lite  (google-generativeai, separate quota pool)
     Tier 3 — gemini-2.5-flash       (google-generativeai, thinking tokens ON)
     Tier 4 — gemini-2.5-pro         (google-generativeai, paid)
 
@@ -221,7 +221,7 @@ def _repair_json(raw_text: str, tier_caller: Any, *caller_args: Any) -> dict[str
 # Tier definitions: (label, caller_attribute_name, model_name)
 _TIERS: list[tuple[str, str, str]] = [
     ("Tier 1: gemini-2.5-flash", "_call_gemini", "gemini-2.5-flash"),
-    ("Tier 2: gemini-2.5-flash-lite", "_call_gemini", "gemini-2.5-flash-lite"),
+    ("Tier 2: gemini-2.0-flash-lite", "_call_gemini", "gemini-2.0-flash-lite"),
     ("Tier 3: gemini-2.5-flash +thinking", "_call_gemini_thinking", "gemini-2.5-flash"),
     ("Tier 4: gemini-2.5-pro", "_call_gemini", "gemini-2.5-pro"),
 ]

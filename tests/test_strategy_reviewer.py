@@ -237,7 +237,7 @@ class TestFallbackChain:
                 result = _run_fallback_chain(MINIMAL_SPEC_YAML)
 
         assert result["verdict"] == "WARN"
-        assert models_called == ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+        assert models_called == ["gemini-2.5-flash", "gemini-2.0-flash-lite"]
         mock_thinking.assert_not_called()
 
     def test_all_tiers_fail_returns_srv_w050(self) -> None:
@@ -280,7 +280,7 @@ class TestFallbackChain:
             if model == "gemini-2.5-flash":
                 # Both Tier 1 initial and Tier 1 repair return bad JSON
                 return bad_raw
-            # Tier 2 (gemini-2.5-flash-lite) succeeds
+            # Tier 2 (gemini-2.0-flash-lite) succeeds
             return good_raw
 
         with patch.object(strategy_reviewer, "_call_gemini", side_effect=gemini_side_effect):
@@ -288,7 +288,7 @@ class TestFallbackChain:
                 result = _run_fallback_chain(MINIMAL_SPEC_YAML)
 
         assert result["verdict"] == "PASS"
-        assert "gemini-2.5-flash-lite" in models_called
+        assert "gemini-2.0-flash-lite" in models_called
         mock_thinking.assert_not_called()
 
     def test_tier4_gemini_pro_called_as_last_resort(self) -> None:
