@@ -14,6 +14,7 @@ Covers:
 import ast
 import datetime
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -520,11 +521,10 @@ class TestReferenceStrategyGates:
 
     No subprocess mocking — exercises the full gate pipeline against
     production-quality code.  All gates must pass; the test writes the
-    canonical output schema to /tmp/pre_commit_gates_output.json.
+    canonical output schema to a temporary file via pytest's tmp_path fixture.
     """
 
     REFERENCE_STRATEGY: Path = REPO_ROOT / "strategies" / "reference" / "sma_crossover_simple.py"
-    OUTPUT_PATH: Path = Path("/tmp/pre_commit_gates_output.json")
 
     # ------------------------------------------------------------------
     # Private helpers to compute per-gate metrics for the output schema
@@ -532,14 +532,13 @@ class TestReferenceStrategyGates:
 
     def _compute_max_ccn(self, strategy_file: Path) -> int:
         """Return the maximum CCN of any function/method block via radon."""
-        try:
-            result = subprocess.run(
-                ["radon", "cc", "-s", "-j", str(strategy_file)],
-                capture_output=True,
-                text=True,
-            )
-        except FileNotFoundError:
-            return 0
+        if not shutil.which("radon"):
+            pytest.skip("radon not installed")
+        result = subprocess.run(
+            ["radon", "cc", "-s", "-j", str(strategy_file)],
+            capture_output=True,
+            text=True,
+        )
         raw = result.stdout.strip()
         if not raw:
             return 0
@@ -588,7 +587,7 @@ class TestReferenceStrategyGates:
     # Test
     # ------------------------------------------------------------------
 
-    def test_all_gates_pass_on_reference_strategy(self) -> None:
+    def test_all_gates_pass_on_reference_strategy(self, tmp_path: Path) -> None:
         """All quality gates must pass on the reference SMA crossover strategy.
 
         Acceptance criteria (from issue #89):
@@ -598,7 +597,7 @@ class TestReferenceStrategyGates:
         - function_length: PASS (max length < 150 lines)
         - param_count: PASS (max params < 8)
 
-        Output is written to /tmp/pre_commit_gates_output.json.
+        Output is written to a temporary file via the tmp_path fixture.
         """
         assert self.REFERENCE_STRATEGY.is_file(), (
             f"Reference strategy not found: {self.REFERENCE_STRATEGY}"
@@ -618,9 +617,21 @@ class TestReferenceStrategyGates:
             )
         )
 
-        # Compute per-gate metrics required by the output schema
-        max_ccn = self._compute_max_ccn(self.REFERENCE_STRATEGY)
-        max_length, max_params = self._compute_ast_metrics(self.REFERENCE_STRATEGY)
+        # Validate gate results from the summary (avoids tautological threshold re-checks)
+        gates = summary["gates"]
+        assert gates["stub_detection"]["result"] == "PASS", "stub_detection gate failed"
+        assert gates["ccn_check"]["result"] == "PASS", "CCN gate failed"
+        assert gates["bandit"]["result"] == "PASS", "bandit gate failed"
+        assert gates["function_length"]["result"] == "PASS", "function_length gate failed"
+
+        # Derive per-gate metrics for the output schema from summary violations.
+        # max_ccn: max CCN among any violations found (0 when all functions are below threshold,
+        # since run_gates() only records violations — functions with CCN < threshold are not
+        # surfaced in the violations list).
+        max_ccn = max(
+            (v.get("ccn", 0) for v in gates["ccn_check"]["violations"]),
+            default=0,
+        )
         high_severity_count = len(
             [
                 v for v in summary.get("violations", [])
@@ -632,41 +643,54 @@ class TestReferenceStrategyGates:
             for v in summary.get("violations", [])
             if v.get("check") == "ast_stub_detection"
         ]
+        param_count_violations = [
+            v for v in summary.get("violations", [])
+            if v.get("check") == "ast_param_count" and v.get("severity") == "ERROR"
+        ]
 
-        # Verify thresholds explicitly
-        assert max_ccn < _CCN_THRESHOLD, (
-            f"max CCN={max_ccn} exceeds threshold {_CCN_THRESHOLD}"
-        )
-        assert max_length < _FUNCTION_MAX_LINES, (
-            f"max function length={max_length} exceeds threshold {_FUNCTION_MAX_LINES}"
-        )
-        assert max_params < _PARAM_MAX_COUNT, (
-            f"max param count={max_params} exceeds threshold {_PARAM_MAX_COUNT}"
-        )
-        assert high_severity_count == 0, (
-            f"Found {high_severity_count} HIGH severity bandit finding(s)"
-        )
-        assert stub_issues == [], f"Stub detection found issues: {stub_issues}"
+        # Compute AST metrics independently for the output schema (not for gate validation)
+        max_length, max_params = self._compute_ast_metrics(self.REFERENCE_STRATEGY)
+
+        # Derive gate status from the actual summary results.
+        # param_count has no dedicated gate in run_gates() summary (it shares ast_violations
+        # with function_length), so we derive its status from violations directly.
+        param_status = "FAIL" if param_count_violations else "PASS"
 
         # Build and persist the required output schema
+        output_file = tmp_path / "pre_commit_gates_output.json"
         output: dict = {
             "strategy_file": str(self.REFERENCE_STRATEGY.relative_to(REPO_ROOT)),
             "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
             ),
             "gates": {
-                "stub_detection": {"status": "PASS", "issues": stub_issues},
-                "cyclomatic_complexity": {"status": "PASS", "max_ccn": max_ccn},
-                "bandit_security": {"status": "PASS", "high_severity_count": high_severity_count},
-                "function_length": {"status": "PASS", "max_length": max_length},
-                "param_count": {"status": "PASS", "max_params": max_params},
+                "stub_detection": {
+                    "status": gates["stub_detection"]["result"],
+                    "issues": stub_issues,
+                },
+                "cyclomatic_complexity": {
+                    "status": gates["ccn_check"]["result"],
+                    "max_ccn": max_ccn,
+                },
+                "bandit_security": {
+                    "status": gates["bandit"]["result"],
+                    "high_severity_count": high_severity_count,
+                },
+                "function_length": {
+                    "status": gates["function_length"]["result"],
+                    "max_length": max_length,
+                },
+                "param_count": {
+                    "status": param_status,
+                    "max_params": max_params,
+                },
             },
-            "overall_status": "PASS",
+            "overall_status": summary["result"],
         }
-        self.OUTPUT_PATH.write_text(json.dumps(output, indent=2), encoding="utf-8")
+        output_file.write_text(json.dumps(output, indent=2), encoding="utf-8")
 
         # Validate what was written
-        written = json.loads(self.OUTPUT_PATH.read_text(encoding="utf-8"))
+        written = json.loads(output_file.read_text(encoding="utf-8"))
         assert written["overall_status"] == "PASS"
         for gate_name, gate_data in written["gates"].items():
             assert gate_data["status"] == "PASS", (
