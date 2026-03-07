@@ -401,7 +401,7 @@ jobs:
         if: steps.aider-build.outcome == 'success'
         run: |
           python scripts/pre_commit_gates.py \
-            --strategy "strategies/${{ steps.spec-name.outputs.spec_name }}.py" \
+            --strategy "strategies/${{ steps.spec-name.outputs.spec_name }}/main.py" \
             --output /tmp/pre_commit_gates_${{ steps.spec-name.outputs.spec_name }}.json
 
       - name: Upload pre-commit gates results
@@ -422,7 +422,7 @@ jobs:
         run: |
           python scripts/qc_upload_eval.py \
             --spec "${{ matrix.spec_file }}" \
-            --strategy "strategies/${{ steps.spec-name.outputs.spec_name }}.py" \
+            --strategy "strategies/${{ steps.spec-name.outputs.spec_name }}/main.py" \
             --output /tmp/qc_eval_output.json
 
       - name: QC Promote to permanent project
@@ -434,7 +434,7 @@ jobs:
         run: |
           python scripts/qc_promote.py \
             --spec-stem "${{ steps.spec-name.outputs.spec_name }}" \
-            --strategy-file "strategies/${{ steps.spec-name.outputs.spec_name }}.py" \
+            --strategy-file "strategies/${{ steps.spec-name.outputs.spec_name }}/main.py" \
             --qc-user-id "${{ secrets.QC_USER_ID }}" \
             --qc-api-token "${{ secrets.QC_API_TOKEN }}" \
             > /tmp/qc_project.json

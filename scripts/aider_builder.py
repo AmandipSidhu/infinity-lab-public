@@ -98,7 +98,7 @@ class TierRunResult:
 def _build_aider_prompt(spec_file: Path, spec_name: str) -> str:
     return (
         f"Read the spec file at {spec_file} and CREATE a new QuantConnect LEAN algorithm "
-        f"in strategies/{spec_name}.py that satisfies all acceptance_criteria defined in the spec. "
+        f"in strategies/{spec_name}/main.py that satisfies all acceptance_criteria defined in the spec. "
         f"Also write comprehensive unit tests in tests/test_{spec_name}.py. "
         f"Do NOT modify any files outside the strategies/ and tests/ directories."
     )
@@ -110,7 +110,7 @@ def _build_aider_cmd(
     spec_name: str,
     extra_args: list[str] | None = None,
 ) -> list[str]:
-    strategy_file = f"strategies/{spec_name}.py"
+    strategy_file = f"strategies/{spec_name}/main.py"
     test_file = f"tests/test_{spec_name}.py"
     prompt = _build_aider_prompt(spec_file, spec_name)
     cmd = [
@@ -161,7 +161,7 @@ def _commit_and_push(
     If the file hash is identical to pre-run, aider made no changes — raise
     FileNotFoundError so the tier is treated as a failure and escalation occurs.
     """
-    strategy_file = f"strategies/{spec_name}.py"
+    strategy_file = f"strategies/{spec_name}/main.py"
     test_file = f"tests/test_{spec_name}.py"
     strategy_path = Path(strategy_file)
     if not strategy_path.exists():
@@ -183,7 +183,7 @@ def _commit_and_push(
         if post_run_hash == pre_run_hash:
             raise FileNotFoundError(
                 f"[aider_builder] Strategy file was not modified by Aider (hash unchanged: "
-                f"{pre_run_hash[:12]}…). Aider exited 0 but made no edits."
+                f"{pre_run_hash[:12]}\u2026). Aider exited 0 but made no edits."
             )
     subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
     subprocess.run(
@@ -350,7 +350,7 @@ def _run_free_tier(
     for iteration in range(_MAX_ITERATIONS):
         # Snapshot the strategy file hash BEFORE running aider so we can
         # detect an unchanged-file false-success after aider exits 0.
-        strategy_path = Path(f"strategies/{spec_name}.py")
+        strategy_path = Path(f"strategies/{spec_name}/main.py")
         pre_run_hash = _file_sha256(strategy_path)
 
         try:
@@ -473,7 +473,7 @@ def run_tier_3(spec_file: Path, spec_name: str) -> TierRunResult:
     prev_pass_rate: float | None = None
 
     for iteration in range(_MAX_ITERATIONS):
-        strategy_path = Path(f"strategies/{spec_name}.py")
+        strategy_path = Path(f"strategies/{spec_name}/main.py")
         pre_run_hash = _file_sha256(strategy_path)
 
         try:
@@ -544,7 +544,7 @@ def run_tier_4(spec_file: Path, spec_name: str) -> TierRunResult:
     last_output = ""
 
     for iteration in range(_MAX_ITERATIONS):
-        strategy_path = Path(f"strategies/{spec_name}.py")
+        strategy_path = Path(f"strategies/{spec_name}/main.py")
         pre_run_hash = _file_sha256(strategy_path)
 
         try:
@@ -609,7 +609,7 @@ def _write_stub_strategy(spec_file: Path, spec_name: str, spec_data: dict) -> Pa
     if isinstance(stop_cfg, dict):
         # e.g. { atr_multiplier: 2.0 }  — express as fraction of price for stub
         atr_mult = float(stop_cfg.get("atr_multiplier", 2.0))
-        stop_loss = round(atr_mult * 0.01, 4)  # rough proxy: 2×ATR ≈ 2% stop
+        stop_loss = round(atr_mult * 0.01, 4)  # rough proxy: 2xATR ~= 2% stop
     else:
         stop_loss = float(stop_cfg) if stop_cfg else 0.05
     take_profit = float(risk.get("take_profit", 0.10))
@@ -634,7 +634,7 @@ def _write_stub_strategy(spec_file: Path, spec_name: str, spec_data: dict) -> Pa
     if max_hold_minutes > 0:
         hold_logic = f"""
     def _check_max_hold(self) -> None:
-        """"""Exit if the position has been held longer than {max_hold_minutes} minutes.""""""
+        """Exit if the position has been held longer than {max_hold_minutes} minutes."""
         if self._entry_time is None:
             return
         elapsed = (self.Time - self._entry_time).total_seconds() / 60
@@ -648,7 +648,7 @@ def _write_stub_strategy(spec_file: Path, spec_name: str, spec_data: dict) -> Pa
     if close_eod:
         eod_logic = """
     def OnEndOfDay(self, symbol) -> None:
-        """"""Close all positions at end of day as required by spec.""""""
+        """Close all positions at end of day as required by spec."""
         self.Liquidate()
         self._entry_price = None
         self._entry_time = None
@@ -714,7 +714,7 @@ class {class_name}(QCAlgorithm):
             self._entry_time = None
 {hold_logic}{eod_logic}'''
 
-    output_path = Path("strategies") / f"{spec_name}.py"
+    output_path = Path("strategies") / spec_name / "main.py"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(stub_code, encoding="utf-8")
     return output_path
@@ -787,7 +787,7 @@ def _write_step_summary(
         f"**Tiers attempted**: {tiers_attempted}\n",
         f"**Iterations**: {total_iterations}\n",
         f"**Result**: {result_str}\n",
-        f"**Strategy file**: `strategies/{spec_name}.py`\n",
+        f"**Strategy file**: `strategies/{spec_name}/main.py`\n",
         f"**Test file**: `tests/test_{spec_name}.py`\n",
     ]
     if not success and failure_details:
@@ -830,6 +830,13 @@ def build(spec_file_str: str) -> bool:
 
     Path("strategies").mkdir(exist_ok=True)
     Path("tests").mkdir(exist_ok=True)
+
+    # Pre-create the strategy directory so aider has an edit target
+    strategy_dir = Path("strategies") / spec_name
+    strategy_dir.mkdir(parents=True, exist_ok=True)
+    strategy_stub = strategy_dir / "main.py"
+    if not strategy_stub.exists():
+        strategy_stub.write_text(f'"""Strategy stub for {spec_name}."""\n', encoding="utf-8")
 
     # Only pre-create the test stub — Aider needs an edit target for tests
     test_stub = Path("tests") / f"test_{spec_name}.py"
