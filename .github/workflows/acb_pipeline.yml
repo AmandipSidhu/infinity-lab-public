@@ -33,9 +33,6 @@ jobs:
           else
             BEFORE="${{ github.event.before }}"
             AFTER="${{ github.sha }}"
-            # Determine a reliable base commit for the diff, handling edge cases:
-            #   - all-zeros BEFORE: new branch first push, force push, or initial push
-            #   - unreachable BEFORE: shallow-clone edge cases or cross-repo events
             fallback_base() {
               git fetch origin main --depth=1 2>/dev/null || echo "Warning: could not fetch origin/main" >&2
               local base
@@ -60,12 +57,8 @@ jobs:
               BASE="$BEFORE"
             fi
             if [ -z "$BASE" ]; then
-              # No reachable parent (initial commit); use git's well-known empty-tree SHA
-              # so the diff lists all files added in the very first commit.
               BASE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
             fi
-            # Use grep to match specs at any depth (avoids glob-depth issues with specs/**/*.yaml).
-            # { ... || true; } prevents grep's exit code 1 (no match) from aborting via pipefail.
             SPECS_JSON=$(git diff --name-only "$BASE" "$AFTER" | { grep -E '^specs/.*\.ya?ml$' || true; } | jq -Rcn '[inputs]')
           fi
           if [ "$SPECS_JSON" = "[]" ]; then
@@ -168,7 +161,7 @@ jobs:
 
       - name: Validate spec
         id: validate
-        continue-on-error: true  # Don't halt pipeline; downstream steps handle the failure
+        continue-on-error: true
         run: |
           python scripts/spec_validator.py \
             --spec "${{ matrix.spec_file }}" \
@@ -182,7 +175,6 @@ jobs:
           import json
           import os
 
-          # Read validation output written by spec_validator.py
           try:
               with open("/tmp/validation_output.json", encoding="utf-8") as f:
                   result = json.load(f)
@@ -190,7 +182,6 @@ jobs:
               print("Validation output not found, skipping summary")
               exit(0)
 
-          # Write human-readable table to the GitHub Step Summary
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as s:
               if result["error_count"] > 0:
                   s.write("## ❌ Spec Validation Failed\n\n")
@@ -204,8 +195,6 @@ jobs:
               else:
                   s.write("## ✅ Spec Validation Passed\n\n")
                   s.write(f"**Spec**: `{result['spec_file']}`\n\n")
-
-              # Always surface warnings when present
               if result["warning_count"] > 0:
                   s.write(f"\n### ⚠️ Warnings ({result['warning_count']})\n\n")
                   for finding in result.get("findings", []):
@@ -225,12 +214,10 @@ jobs:
           import os
           import requests
 
-          # Read validation output for error details
           try:
               with open("/tmp/validation_output.json", encoding="utf-8") as f:
                   result = json.load(f)
               error_summary = f"{result['error_count']} errors"
-              # Show top 3 errors as bullet points in the Slack message
               errors_text = "\n".join([
                   f"• {f['code']}: {f['message']}"
                   for f in result.get("findings", [])[:3]
@@ -243,36 +230,17 @@ jobs:
           spec_file = "${{ matrix.spec_file }}"
           run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-          # Build Slack Block Kit message with header, fields, error list, and CTA button
           message = {
               "channel": os.environ["SLACK_ACK_CHANNEL_ID"],
               "text": "❌ ACB Pipeline: Spec validation failed",
               "blocks": [
-                  {
-                      "type": "header",
-                      "text": {"type": "plain_text", "text": "❌ Spec Validation Failed"},
-                  },
-                  {
-                      "type": "section",
-                      "fields": [
-                          {"type": "mrkdwn", "text": f"*Spec:*\n`{spec_file}`"},
-                          {"type": "mrkdwn", "text": f"*Errors:*\n{error_summary}"},
-                      ],
-                  },
-                  {
-                      "type": "section",
-                      "text": {"type": "mrkdwn", "text": f"*Top Errors:*\n{errors_text}"},
-                  },
-                  {
-                      "type": "actions",
-                      "elements": [
-                          {
-                              "type": "button",
-                              "text": {"type": "plain_text", "text": "View Workflow Run"},
-                              "url": run_url,
-                          }
-                      ],
-                  },
+                  {"type": "header", "text": {"type": "plain_text", "text": "❌ Spec Validation Failed"}},
+                  {"type": "section", "fields": [
+                      {"type": "mrkdwn", "text": f"*Spec:*\n`{spec_file}`"},
+                      {"type": "mrkdwn", "text": f"*Errors:*\n{error_summary}"},
+                  ]},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top Errors:*\n{errors_text}"}},
+                  {"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "View Workflow Run"}, "url": run_url}]},
               ],
           }
 
@@ -281,7 +249,6 @@ jobs:
               headers={"Authorization": f"Bearer {os.environ['SLACK_BOT_TOKEN']}"},
               json=message,
           )
-
           if not response.ok or not response.json().get("ok"):
               print(f"Slack notification failed: {response.text}")
               exit(1)
@@ -482,68 +449,40 @@ jobs:
           import os
           import requests
 
-          # Determine overall pipeline status from key step outcomes
           validate_outcome = "${{ steps.validate.outcome }}"
           aider_outcome = "${{ steps.aider-build.outcome }}"
           qc_outcome = "${{ steps.qc-upload-eval.outcome }}"
 
           if validate_outcome == "failure":
-              status_emoji = "❌"
-              status_text = "Validation Failed"
+              status_emoji = "❌"; status_text = "Validation Failed"
           elif aider_outcome == "failure":
-              status_emoji = "⚠️"
-              status_text = "Aider Build Failed"
+              status_emoji = "⚠️"; status_text = "Aider Build Failed"
           elif qc_outcome == "failure":
-              status_emoji = "⚠️"
-              status_text = "QC Backtest Failed"
+              status_emoji = "⚠️"; status_text = "QC Backtest Failed"
           elif aider_outcome == "success" and qc_outcome == "success":
-              status_emoji = "✅"
-              status_text = "Pipeline Completed Successfully"
+              status_emoji = "✅"; status_text = "Pipeline Completed Successfully"
           else:
-              status_emoji = "⏭️"
-              status_text = "Pipeline Completed (Some Steps Skipped)"
+              status_emoji = "⏭️"; status_text = "Pipeline Completed (Some Steps Skipped)"
 
           spec_file = "${{ matrix.spec_file }}"
           run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-          # Build Slack Block Kit message summarizing the full pipeline run
           message = {
               "channel": os.environ["SLACK_ACK_CHANNEL_ID"],
               "text": f"{status_emoji} ACB Pipeline: {status_text}",
               "blocks": [
-                  {
-                      "type": "header",
-                      "text": {"type": "plain_text", "text": f"{status_emoji} {status_text}"},
-                  },
-                  {
-                      "type": "section",
-                      "fields": [
-                          {"type": "mrkdwn", "text": f"*Spec:*\n`{spec_file}`"},
-                          {"type": "mrkdwn", "text": f"*Run ID:*\n`${{ github.run_id }}`"},
-                      ],
-                  },
-                  {
-                      "type": "section",
-                      "text": {
-                          "type": "mrkdwn",
-                          "text": (
-                              f"*Step Outcomes:*\n"
-                              f"• Validate: {validate_outcome}\n"
-                              f"• Aider Build: {aider_outcome or 'skipped'}\n"
-                              f"• QC Backtest: {qc_outcome or 'skipped'}"
-                          ),
-                      },
-                  },
-                  {
-                      "type": "actions",
-                      "elements": [
-                          {
-                              "type": "button",
-                              "text": {"type": "plain_text", "text": "View Workflow Run"},
-                              "url": run_url,
-                          }
-                      ],
-                  },
+                  {"type": "header", "text": {"type": "plain_text", "text": f"{status_emoji} {status_text}"}},
+                  {"type": "section", "fields": [
+                      {"type": "mrkdwn", "text": f"*Spec:*\n`{spec_file}`"},
+                      {"type": "mrkdwn", "text": f"*Run ID:*\n`${{ github.run_id }}`"},
+                  ]},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": (
+                      f"*Step Outcomes:*\n"
+                      f"• Validate: {validate_outcome}\n"
+                      f"• Aider Build: {aider_outcome or 'skipped'}\n"
+                      f"• QC Backtest: {qc_outcome or 'skipped'}"
+                  )}},
+                  {"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "View Workflow Run"}, "url": run_url}]},
               ],
           }
 
@@ -552,9 +491,7 @@ jobs:
               headers={"Authorization": f"Bearer {os.environ['SLACK_BOT_TOKEN']}"},
               json=message,
           )
-
           if not response.ok or not response.json().get("ok"):
-              # Notification failure should not block the pipeline
               print(f"Slack notification failed: {response.text}")
           PYEOF
 
@@ -563,6 +500,7 @@ jobs:
         if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
           python - <<'PYEOF'
           import datetime
@@ -605,16 +543,10 @@ jobs:
               ("notify-pipeline-completion", "Notify Slack on pipeline completion",    "${{ steps.notify-pipeline-completion.outcome }}"),
           ]
 
-          icons = {
-              "success":   "✅",
-              "failure":   "❌",
-              "skipped":   "⏭️",
-              "cancelled": "🚫",
-          }
+          icons = {"success": "✅", "failure": "❌", "skipped": "⏭️", "cancelled": "🚫"}
 
           lines = [
-              "# ACB Pipeline E2E Run Report",
-              "",
+              "# ACB Pipeline E2E Run Report", "",
               "| Field | Value |",
               "|-------|-------|",
               f"| **Spec** | `{spec_file}` |",
@@ -626,22 +558,13 @@ jobs:
           ]
 
           if missing_secrets and missing_secrets.strip():
-              lines += [
-                  "## ⚠️ Missing Secrets",
-                  "",
-                  "The following secrets were absent — their dependent steps were skipped:",
-                  "",
-              ]
+              lines += ["## ⚠️ Missing Secrets", "",
+                        "The following secrets were absent — their dependent steps were skipped:", ""]
               for s in missing_secrets.split():
                   lines.append(f"- `{s}`")
               lines.append("")
 
-          lines += [
-              "## Step Outcomes",
-              "",
-              "| Step | Name | Outcome |",
-              "|------|------|---------|",
-          ]
+          lines += ["## Step Outcomes", "", "| Step | Name | Outcome |", "|------|------|---------|",]
           for step_id, step_name, outcome in steps_data:
               icon = icons.get(outcome, "❓")
               lines.append(f"| `{step_id}` | {step_name} | {icon} {outcome or 'unknown'} |")
@@ -651,15 +574,52 @@ jobs:
           print(f"E2E report written to: {report_path}")
           PYEOF
 
-          # Commit and push the report back to the branch (best-effort)
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add reports/e2e/
-          if git diff --cached --quiet; then
-            echo "No new report to commit."
+          # Push E2E report to infinity-lab-private (UNI-89)
+          # Falls back to committing to this repo if PRIVATE_REPO_TOKEN is absent.
+          if [ -n "$PRIVATE_REPO_TOKEN" ]; then
+            SPEC_STEM=$(python -c "import pathlib; print(pathlib.Path('${{ matrix.spec_file }}').stem)")
+            TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+            RUN_ID="$GITHUB_RUN_ID"
+            ATTEMPT="$GITHUB_RUN_ATTEMPT"
+            REPORT_FILE="reports/e2e/${SPEC_STEM}/${TIMESTAMP}-run-${RUN_ID}-attempt-${ATTEMPT}.md"
+            REPORT_CONTENT=$(cat "reports/e2e/${SPEC_STEM}/${TIMESTAMP}-run-${RUN_ID}-attempt-${ATTEMPT}.md" | base64 -w 0)
+
+            # Use GitHub Contents API to push the file to infinity-lab-private
+            HTTP_STATUS=$(curl -s -o /tmp/private_push_response.json -w "%{http_code}" \
+              -X PUT \
+              -H "Authorization: Bearer $PRIVATE_REPO_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/AmandipSidhu/infinity-lab-private/contents/${REPORT_FILE}" \
+              -d "{\"message\": \"ci: E2E report ${SPEC_STEM} run ${RUN_ID} attempt ${ATTEMPT}\", \"content\": \"${REPORT_CONTENT}\"}")
+
+            if [ "$HTTP_STATUS" -eq 201 ] || [ "$HTTP_STATUS" -eq 200 ]; then
+              echo "E2E report pushed to infinity-lab-private: ${REPORT_FILE}"
+            else
+              echo "::warning::Failed to push E2E report to infinity-lab-private (HTTP $HTTP_STATUS). Falling back to local commit."
+              cat /tmp/private_push_response.json
+              # Fallback: commit to this repo
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git add reports/e2e/
+              if git diff --cached --quiet; then
+                echo "No new report to commit."
+              else
+                git commit -m "ci: E2E report fallback for ${{ matrix.spec_file }} [run ${{ github.run_id }}]"
+                git push || echo "::warning::Could not push fallback E2E report."
+              fi
+            fi
           else
-            git commit -m "ci: add E2E report for ${{ matrix.spec_file }} [run ${{ github.run_id }} attempt ${{ github.run_attempt }}]"
-            git push || echo "::warning::Could not push E2E report — report exists in the workflow artifacts only."
+            echo "::warning::PRIVATE_REPO_TOKEN not set — committing E2E report to this repo instead."
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add reports/e2e/
+            if git diff --cached --quiet; then
+              echo "No new report to commit."
+            else
+              git commit -m "ci: add E2E report for ${{ matrix.spec_file }} [run ${{ github.run_id }} attempt ${{ github.run_attempt }}]"
+              git push || echo "::warning::Could not push E2E report — report exists in the workflow artifacts only."
+            fi
           fi
 
       - name: Test Slack Notification (send Hi)

@@ -12,6 +12,11 @@ categorises tools into: ``syntax``, ``validation``, ``project``, ``backtest``,
 Output is written to ``config/qc_tools_manifest.json`` (relative to the
 repository root, or the path supplied via ``--output``).
 
+SCOPE CONSTRAINT (ARCHITECTURE v4.5 §9):
+  Write and destructive tools are intentionally excluded from this manifest.
+  ACB may READ project/backtest data and CREATE new resources, but must never
+  UPDATE or DELETE existing projects, files, or live algorithms.
+
 Exit codes:
   0 — Manifest written successfully (total_count >= 1)
   1 — Manifest could not be written or total_count < 1
@@ -38,8 +43,31 @@ _REQUEST_TIMEOUT_SECONDS: int = 10
 _DEFAULT_OUTPUT: Path = Path(__file__).parent.parent / "config" / "qc_tools_manifest.json"
 
 # ---------------------------------------------------------------------------
+# Tools explicitly banned from the manifest (ARCHITECTURE v4.5 §9).
+# These are write/destructive operations ACB must never invoke.
+# ---------------------------------------------------------------------------
+
+_SCRUBBED_TOOLS: frozenset[str] = frozenset({
+    # Project mutations
+    "update_project",
+    "delete_project",
+    # File mutations
+    "update_file",
+    "delete_file",
+    # Live trading mutations (full lifecycle — ACB never touches live)
+    "create_live_algorithm",
+    "update_live_algorithm",
+    "delete_live_algorithm",
+    "list_live_algorithms",
+    # Backtest mutations
+    "update_backtest",
+    "delete_backtest",
+})
+
+# ---------------------------------------------------------------------------
 # Category mapping
 # Maps tool names (or prefixes) to their manifest category.
+# Only READ/CREATE tools are included (see _SCRUBBED_TOOLS above).
 # ---------------------------------------------------------------------------
 
 _CATEGORY_MAP: dict[str, list[str]] = {
@@ -60,13 +88,9 @@ _CATEGORY_MAP: dict[str, list[str]] = {
     "project": [
         "create_project",
         "read_project",
-        "update_project",
-        "delete_project",
         "list_projects",
         "create_file",
         "read_file",
-        "update_file",
-        "delete_file",
         "list_files",
         "create_node",
         "read_node",
@@ -80,8 +104,6 @@ _CATEGORY_MAP: dict[str, list[str]] = {
     "backtest": [
         "create_backtest",
         "read_backtest",
-        "update_backtest",
-        "delete_backtest",
         "list_backtests",
         "read_backtest_orders",
         "read_backtest_trades",
@@ -92,11 +114,8 @@ _CATEGORY_MAP: dict[str, list[str]] = {
         "read_backtest_statistics",
         "read_backtest_logs",
         "create_backtest_report",
-        "create_live_algorithm",
+        # Live: read-only subset only
         "read_live_algorithm",
-        "update_live_algorithm",
-        "delete_live_algorithm",
-        "list_live_algorithms",
         "read_live_orders",
         "read_live_trades",
         "read_live_charts",
@@ -126,10 +145,11 @@ _TOOL_TO_CATEGORY: dict[str, str] = {
 
 # ---------------------------------------------------------------------------
 # Static built-in tool catalogue (LLM tool-calling function format)
+# Write/destructive tools have been removed per _SCRUBBED_TOOLS.
 # ---------------------------------------------------------------------------
 
 _STATIC_TOOLS: list[dict[str, Any]] = [
-    # ── syntax ────────────────────────────────────────────────────────────
+    # ── syntax ─────────────────────────────────────────────────────────────────────────────
     {
         "name": "check_syntax",
         "description": "Check Python code syntax for errors in a QuantConnect algorithm file.",
@@ -198,7 +218,7 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
             "required": ["projectId", "fileName"],
         },
     },
-    # ── validation ────────────────────────────────────────────────────────
+    # ── validation ──────────────────────────────────────────────────────────────────────────
     {
         "name": "check_initialization_errors",
         "description": "Check a QuantConnect algorithm for common initialization errors before backtesting.",
@@ -257,7 +277,7 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
             "required": ["projectId", "fileName"],
         },
     },
-    # ── project ───────────────────────────────────────────────────────────
+    # ── project (read/create only) ──────────────────────────────────────────────────────
     {
         "name": "create_project",
         "description": "Create a new QuantConnect project and return its project_id.",
@@ -277,30 +297,6 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
     {
         "name": "read_project",
         "description": "Read metadata and settings for an existing QuantConnect project.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-            },
-            "required": ["projectId"],
-        },
-    },
-    {
-        "name": "update_project",
-        "description": "Update the name or description of an existing QuantConnect project.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "name": {"type": "string", "description": "New project name (optional)"},
-                "description": {"type": "string", "description": "New description (optional)"},
-            },
-            "required": ["projectId"],
-        },
-    },
-    {
-        "name": "delete_project",
-        "description": "Permanently delete a QuantConnect project and all its files.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -344,31 +340,6 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "update_file",
-        "description": "Update the content of an existing file in a QuantConnect project.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "fileName": {"type": "string", "description": "File name to update"},
-                "content": {"type": "string", "description": "New file content"},
-            },
-            "required": ["projectId", "fileName", "content"],
-        },
-    },
-    {
-        "name": "delete_file",
-        "description": "Delete a source file from a QuantConnect project.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "fileName": {"type": "string", "description": "File name to delete"},
-            },
-            "required": ["projectId", "fileName"],
-        },
-    },
-    {
         "name": "list_files",
         "description": "List all source files in a QuantConnect project.",
         "input_schema": {
@@ -381,7 +352,7 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "create_node",
-        "description": "Create a compute node for running backtests or live trading.",
+        "description": "Create a compute node for running backtests.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -476,7 +447,7 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
             "required": ["projectId", "name"],
         },
     },
-    # ── backtest ──────────────────────────────────────────────────────────
+    # ── backtest (read/create only; live read-only subset) ───────────────────────
     {
         "name": "create_backtest",
         "description": "Trigger a new backtest for a QuantConnect project and return the backtest_id.",
@@ -493,32 +464,6 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
     {
         "name": "read_backtest",
         "description": "Read the status and results of a running or completed backtest.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "backtestId": {"type": "string", "description": "Backtest ID"},
-            },
-            "required": ["projectId", "backtestId"],
-        },
-    },
-    {
-        "name": "update_backtest",
-        "description": "Update the name or note of an existing backtest.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "backtestId": {"type": "string", "description": "Backtest ID"},
-                "name": {"type": "string", "description": "New backtest name (optional)"},
-                "note": {"type": "string", "description": "New backtest note (optional)"},
-            },
-            "required": ["projectId", "backtestId"],
-        },
-    },
-    {
-        "name": "delete_backtest",
-        "description": "Delete a backtest and its results from a QuantConnect project.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -654,27 +599,10 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
             "required": ["projectId", "backtestId"],
         },
     },
-    {
-        "name": "create_live_algorithm",
-        "description": "Deploy a compiled algorithm to live trading on a brokerage.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "compileId": {"type": "string", "description": "Compile ID to deploy"},
-                "nodeId": {"type": "string", "description": "Live trading node ID"},
-                "brokerageSettings": {
-                    "type": "object",
-                    "description": "Brokerage-specific configuration",
-                },
-                "versionId": {"type": "string", "description": "Algorithm version ID (optional)"},
-            },
-            "required": ["projectId", "compileId", "nodeId", "brokerageSettings"],
-        },
-    },
+    # Live: read-only subset — ACB never deploys or stops live algorithms
     {
         "name": "read_live_algorithm",
-        "description": "Read the status and runtime details of a live trading algorithm.",
+        "description": "Read the status and runtime details of a live trading algorithm (read-only).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -682,50 +610,11 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
                 "deployId": {"type": "string", "description": "Deployment ID"},
             },
             "required": ["projectId", "deployId"],
-        },
-    },
-    {
-        "name": "update_live_algorithm",
-        "description": "Send a live command (e.g. parameter update) to a running live algorithm.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "deployId": {"type": "string", "description": "Deployment ID"},
-                "command": {"type": "object", "description": "Command payload to send"},
-            },
-            "required": ["projectId", "deployId", "command"],
-        },
-    },
-    {
-        "name": "delete_live_algorithm",
-        "description": "Stop and liquidate a live trading algorithm.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "projectId": {"type": "integer", "description": "Project ID"},
-                "deployId": {"type": "string", "description": "Deployment ID"},
-            },
-            "required": ["projectId", "deployId"],
-        },
-    },
-    {
-        "name": "list_live_algorithms",
-        "description": "List all live trading algorithms for the authenticated user.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "description": "Filter by status (optional): running, stopped, runtime-error",
-                },
-            },
-            "required": [],
         },
     },
     {
         "name": "read_live_orders",
-        "description": "Read orders placed by a running live trading algorithm.",
+        "description": "Read orders placed by a running live trading algorithm (read-only).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -738,7 +627,7 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "read_live_trades",
-        "description": "Read trades executed by a running live trading algorithm.",
+        "description": "Read trades executed by a running live trading algorithm (read-only).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -751,7 +640,7 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "read_live_charts",
-        "description": "Read chart data from a running live trading algorithm.",
+        "description": "Read chart data from a running live trading algorithm (read-only).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -765,7 +654,7 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "read_live_insights",
-        "description": "Read Alpha model insights from a running live trading algorithm.",
+        "description": "Read Alpha model insights from a running live trading algorithm (read-only).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -778,7 +667,7 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "read_live_portfolio",
-        "description": "Read the current portfolio state (holdings, cash) of a live algorithm.",
+        "description": "Read the current portfolio state (holdings, cash) of a live algorithm (read-only).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -789,7 +678,7 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "read_live_logs",
-        "description": "Read console log output from a running live trading algorithm.",
+        "description": "Read console log output from a running live trading algorithm (read-only).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -801,7 +690,7 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
             "required": ["projectId", "algorithmId"],
         },
     },
-    # ── compile ───────────────────────────────────────────────────────────
+    # ── compile ─────────────────────────────────────────────────────────────────────────────
     {
         "name": "create_compile",
         "description": "Compile a QuantConnect project and return a compile_id for backtest deployment.",
@@ -825,7 +714,7 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
             "required": ["projectId", "compileId"],
         },
     },
-    # ── search ────────────────────────────────────────────────────────────
+    # ── search ─────────────────────────────────────────────────────────────────────────────
     {
         "name": "search_quantconnect",
         "description": "Search QuantConnect documentation, forum posts, and algorithm examples.",
@@ -893,6 +782,10 @@ _STATIC_TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+# Sanity-check: verify no scrubbed tools leaked into _STATIC_TOOLS at module load time
+_leaked = [t["name"] for t in _STATIC_TOOLS if t["name"] in _SCRUBBED_TOOLS]
+assert not _leaked, f"SCRUBBED tools found in _STATIC_TOOLS: {_leaked}"
+
 
 # ---------------------------------------------------------------------------
 # MCP protocol helpers
@@ -954,16 +847,20 @@ def _fetch_live_tools(mcp_url: str) -> list[dict[str, Any]] | None:
         )
         return None
 
-    return [_convert_mcp_tool(t) for t in mcp_tools]
+    converted = [_convert_mcp_tool(t) for t in mcp_tools]
+    # Scrub write/destructive tools from live manifest too
+    scrubbed_live = [t for t in converted if t["name"] not in _SCRUBBED_TOOLS]
+    removed = len(converted) - len(scrubbed_live)
+    if removed:
+        print(
+            f"[mcp_tool_discovery] Scrubbed {removed} write/destructive tools from live manifest.",
+            file=sys.stderr,
+        )
+    return scrubbed_live
 
 
 def _convert_mcp_tool(mcp_tool: dict[str, Any]) -> dict[str, Any]:
-    """Convert a single MCP tool definition to LLM tool-calling format.
-
-    MCP uses ``inputSchema`` (camelCase); the tool-calling format uses
-    ``input_schema`` (snake_case).  All other fields are passed through
-    unchanged.
-    """
+    """Convert a single MCP tool definition to LLM tool-calling format."""
     return {
         "name": mcp_tool.get("name", ""),
         "description": mcp_tool.get("description", ""),
@@ -977,11 +874,7 @@ def _convert_mcp_tool(mcp_tool: dict[str, Any]) -> dict[str, Any]:
 
 
 def _categorise_tools(tools: list[dict[str, Any]]) -> dict[str, list[str]]:
-    """Build the categories dict mapping each category to its tool names.
-
-    Tools whose names are not in ``_TOOL_TO_CATEGORY`` are assigned to
-    ``project`` as a safe default.
-    """
+    """Build the categories dict mapping each category to its tool names."""
     categories: dict[str, list[str]] = {cat: [] for cat in _CATEGORY_MAP}
     for tool in tools:
         name: str = tool.get("name", "")
@@ -990,7 +883,6 @@ def _categorise_tools(tools: list[dict[str, Any]]) -> dict[str, list[str]]:
             categories[category] = []
         if name not in categories[category]:
             categories[category].append(name)
-    # Remove empty categories
     return {cat: names for cat, names in categories.items() if names}
 
 
@@ -1014,13 +906,7 @@ def build_manifest(tools: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def validate_manifest(manifest: dict[str, Any]) -> bool:
-    """Return True iff the manifest passes basic sanity checks.
-
-    Checks:
-    - ``tools`` is a non-empty list
-    - ``total_count`` >= 1 and matches len(tools)
-    - ``categories`` is a non-empty dict
-    """
+    """Return True iff the manifest passes basic sanity checks."""
     tools = manifest.get("tools")
     total_count = manifest.get("total_count", 0)
     categories = manifest.get("categories")
@@ -1033,6 +919,14 @@ def validate_manifest(manifest: dict[str, Any]) -> bool:
         return False
     if not isinstance(categories, dict) or len(categories) == 0:
         return False
+    # Ensure no scrubbed tools leaked into the manifest
+    leaked = [t["name"] for t in tools if t["name"] in _SCRUBBED_TOOLS]
+    if leaked:
+        print(
+            f"[mcp_tool_discovery] FATAL: scrubbed tools leaked into manifest: {leaked}",
+            file=sys.stderr,
+        )
+        return False
     return True
 
 
@@ -1042,10 +936,6 @@ def validate_manifest(manifest: dict[str, Any]) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for the MCP tool discovery script.
-
-    Returns 0 on success, 1 on manifest failure, 2 on argument error.
-    """
     parser = argparse.ArgumentParser(
         description="Generate the QC MCP tools manifest for use with Aider."
     )
@@ -1064,38 +954,26 @@ def main(argv: list[str] | None = None) -> int:
 
     output_path: Path = args.output
 
-    # 1. Try live server first
     tools: list[dict[str, Any]] | None = None
     if args.mcp_url:
-        print(
-            f"[mcp_tool_discovery] Attempting live tool enumeration from {args.mcp_url} …"
-        )
+        print(f"[mcp_tool_discovery] Attempting live tool enumeration from {args.mcp_url} …")
         tools = _fetch_live_tools(args.mcp_url)
         if tools is not None:
-            print(
-                f"[mcp_tool_discovery] Live enumeration succeeded: "
-                f"{len(tools)} tools discovered."
-            )
+            print(f"[mcp_tool_discovery] Live enumeration succeeded: {len(tools)} tools discovered.")
 
-    # 2. Fall back to built-in static catalogue
     if tools is None:
-        print(
-            "[mcp_tool_discovery] Using static built-in tool catalogue "
-            f"({len(_STATIC_TOOLS)} tools)."
-        )
+        print(f"[mcp_tool_discovery] Using static built-in tool catalogue ({len(_STATIC_TOOLS)} tools).")
         tools = _STATIC_TOOLS
 
     manifest = build_manifest(tools)
 
     if not validate_manifest(manifest):
         print(
-            "[mcp_tool_discovery] ERROR: generated manifest failed validation "
-            "(total_count < 1 or malformed).",
+            "[mcp_tool_discovery] ERROR: generated manifest failed validation.",
             file=sys.stderr,
         )
         return 1
 
-    # 3. Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         output_path.write_text(
@@ -1103,16 +981,10 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
     except OSError as exc:
-        print(
-            f"[mcp_tool_discovery] ERROR: cannot write manifest to {output_path}: {exc}",
-            file=sys.stderr,
-        )
+        print(f"[mcp_tool_discovery] ERROR: cannot write manifest to {output_path}: {exc}", file=sys.stderr)
         return 1
 
-    print(
-        f"[mcp_tool_discovery] Manifest written to {output_path} "
-        f"(total_count={manifest['total_count']})."
-    )
+    print(f"[mcp_tool_discovery] Manifest written to {output_path} (total_count={manifest['total_count']}).")
     return 0
 
 
