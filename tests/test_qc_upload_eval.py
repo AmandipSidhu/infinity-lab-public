@@ -7,6 +7,8 @@ Covers:
 - CLI: exit codes, --output flag, stub fallback, missing files
 """
 
+import base64
+import hashlib
 import json
 import os
 import sys
@@ -27,6 +29,7 @@ from qc_upload_eval import (  # noqa: E402
     _create_project,
     _extract_stat,
     _poll_backtest,
+    _qc_auth,
     _upload_strategy,
     evaluate_fitness,
     main,
@@ -66,6 +69,88 @@ def _make_strategy_file(tmp_path: Path) -> Path:
     path = tmp_path / "test_strategy.py"
     path.write_text("# strategy code\n", encoding="utf-8")
     return path
+
+
+# ---------------------------------------------------------------------------
+# _qc_auth
+# ---------------------------------------------------------------------------
+
+
+class TestQcAuth:
+    """Verify _qc_auth produces the exact Authorization header mandated by QC.
+
+    Official formula:
+      hash = SHA256(api_token:timestamp)          # user_id NOT in hash
+      Authorization = Basic base64(user_id:hash)
+      Timestamp = <unix-seconds>
+    """
+
+    @staticmethod
+    def _decode_auth(headers: dict) -> tuple[str, str]:
+        """Decode Authorization header → (user_id, hash_hex)."""
+        decoded = base64.b64decode(
+            headers["Authorization"].removeprefix("Basic ")
+        ).decode("utf-8")
+        user_part, hash_part = decoded.split(":", 1)
+        return user_part, hash_part
+
+    def test_returns_authorization_and_timestamp_headers(self) -> None:
+        fixed_ts = 1_700_000_000
+        with patch("qc_upload_eval.time.time", return_value=fixed_ts):
+            headers = _qc_auth("myuser", "mytoken")
+        assert headers.get("Authorization", "").startswith("Basic ")
+        assert headers.get("Timestamp") == str(fixed_ts)
+
+    def test_timestamp_header_matches_frozen_time(self) -> None:
+        fixed_ts = 1_700_000_000
+        with patch("qc_upload_eval.time.time", return_value=fixed_ts):
+            headers = _qc_auth("myuser", "mytoken")
+        assert headers["Timestamp"] == str(fixed_ts)
+
+    def test_hash_input_excludes_user_id(self) -> None:
+        """Hash must be SHA256(api_token:timestamp), NOT SHA256(user_id:api_token:timestamp)."""
+        fixed_ts = 1_700_000_000
+        user_id = "u123"
+        api_token = "tok456"
+        with patch("qc_upload_eval.time.time", return_value=fixed_ts):
+            headers = _qc_auth(user_id, api_token)
+
+        ts_str = str(fixed_ts)
+        expected_hash = hashlib.sha256(
+            f"{api_token}:{ts_str}".encode("utf-8")
+        ).hexdigest()
+        wrong_hash = hashlib.sha256(
+            f"{user_id}:{api_token}:{ts_str}".encode("utf-8")
+        ).hexdigest()
+
+        _, actual_hash = self._decode_auth(headers)
+        assert actual_hash == expected_hash, "user_id must NOT be included in the hash input"
+        assert actual_hash != wrong_hash
+
+    def test_authorization_header_format(self) -> None:
+        """Authorization header must be Basic base64(user_id:sha256(api_token:ts))."""
+        fixed_ts = 1_700_000_000
+        user_id = "u123"
+        api_token = "tok456"
+        with patch("qc_upload_eval.time.time", return_value=fixed_ts):
+            headers = _qc_auth(user_id, api_token)
+
+        ts_str = str(fixed_ts)
+        expected_hash = hashlib.sha256(
+            f"{api_token}:{ts_str}".encode("utf-8")
+        ).hexdigest()
+        expected_credentials = base64.b64encode(
+            f"{user_id}:{expected_hash}".encode("utf-8")
+        ).decode("utf-8")
+        assert headers["Authorization"] == f"Basic {expected_credentials}"
+
+    def test_user_id_is_in_base64_prefix(self) -> None:
+        fixed_ts = 1_700_000_000
+        user_id = "u123"
+        with patch("qc_upload_eval.time.time", return_value=fixed_ts):
+            headers = _qc_auth(user_id, "anytoken")
+        decoded_user, _ = self._decode_auth(headers)
+        assert decoded_user == user_id
 
 
 # ---------------------------------------------------------------------------
