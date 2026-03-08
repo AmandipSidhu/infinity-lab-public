@@ -5,10 +5,15 @@ This script uses the QuantConnect REST API for automated CI backtesting.
 For manual live deployment after human review, see ``infinity-lab-private``.
 
 Uploads the built strategy to QuantConnect via the REST API at
-``https://www.quantconnect.com/api/v2`` using HTTP Basic auth with a
-SHA-256 timestamp hash (same pattern as ``qc_promote.py``), triggers a
-backtest, polls until completion, and evaluates the results against the
-FitnessTracker constraints defined in the strategy spec.
+``https://www.quantconnect.com/api/v2`` using HTTP Basic auth with the
+official QC formula::
+
+    hash = SHA256(api_token:timestamp)          # user_id is NOT in the hash
+    Authorization = Basic base64(user_id:hash)
+    Timestamp = <unix-seconds>
+
+triggers a backtest, polls until completion, and evaluates the results
+against the FitnessTracker constraints defined in the strategy spec.
 
 FitnessTracker constraints evaluated:
   - Sharpe Ratio >= 0.5 (hard minimum; spec may require higher)
@@ -25,6 +30,7 @@ Exit codes:
 """
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -63,14 +69,27 @@ class MCPConnectionError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _qc_auth(user_id: str, api_token: str) -> tuple[dict[str, str], tuple[str, str]]:
-    """Build HTTP Basic auth tuple and Timestamp header for a QC API request."""
+def _qc_auth(user_id: str, api_token: str) -> dict[str, str]:
+    """Return headers dict for a QC REST API request.
+
+    Official QC auth formula:
+      hash = SHA256(api_token:timestamp)          # user_id NOT in hash
+      Authorization = Basic base64(user_id:hash)
+      Timestamp = <unix-seconds>
+
+    Ref: https://www.quantconnect.com/docs/v2/cloud-platform/api-reference/authentication
+    """
     ts = str(int(time.time()))
     token_hash = hashlib.sha256(
-        f"{user_id}:{api_token}:{ts}".encode("utf-8")
+        f"{api_token}:{ts}".encode("utf-8")
     ).hexdigest()
-    headers = {"Timestamp": ts}
-    return headers, (user_id, token_hash)
+    credentials = base64.b64encode(
+        f"{user_id}:{token_hash}".encode("utf-8")
+    ).decode("utf-8")
+    return {
+        "Authorization": f"Basic {credentials}",
+        "Timestamp": ts,
+    }
 
 
 def _qc_post(
@@ -82,11 +101,11 @@ def _qc_post(
     Raises ``MCPConnectionError`` on connection failure, ``RuntimeError`` on
     HTTP or API-level errors.
     """
-    headers, auth = _qc_auth(_QC_USER_ID, _QC_API_TOKEN)
+    headers = _qc_auth(_QC_USER_ID, _QC_API_TOKEN)
     url = f"{_QC_BASE_URL}/{endpoint}"
     try:
         resp = requests.post(
-            url, json=payload, headers=headers, auth=auth,
+            url, json=payload, headers=headers,
             timeout=_REQUEST_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
@@ -112,11 +131,11 @@ def _qc_get(
     Raises ``MCPConnectionError`` on connection failure, ``RuntimeError`` on
     HTTP or API-level errors.
     """
-    headers, auth = _qc_auth(_QC_USER_ID, _QC_API_TOKEN)
+    headers = _qc_auth(_QC_USER_ID, _QC_API_TOKEN)
     url = f"{_QC_BASE_URL}/{endpoint}"
     try:
         resp = requests.get(
-            url, params=params, headers=headers, auth=auth,
+            url, params=params, headers=headers,
             timeout=_REQUEST_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
