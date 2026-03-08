@@ -57,6 +57,9 @@ from aider_builder import (  # noqa: E402
     _format_qc_feedback,
     _read_backtest_metrics,
     _run_qc_eval,
+    _snapshot_strategy_for_tier,
+    _write_aider_prompt,
+    _write_build_result,
     _write_step_summary,
     build,
     main,
@@ -798,3 +801,155 @@ class TestMain:
     def test_missing_spec_arg_raises_system_exit(self) -> None:
         with pytest.raises(SystemExit):
             main([])
+
+
+# ---------------------------------------------------------------------------
+# _write_aider_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestWriteAiderPrompt:
+    def test_writes_prompt_to_tmp(self) -> None:
+        real_target = Path("/tmp/aider_prompt.txt")
+        _write_aider_prompt("hello aider")
+        assert real_target.read_text(encoding="utf-8") == "hello aider"
+
+    def test_overwrites_on_subsequent_calls(self) -> None:
+        target = Path("/tmp/aider_prompt.txt")
+        _write_aider_prompt("first prompt")
+        _write_aider_prompt("second prompt")
+        assert target.read_text(encoding="utf-8") == "second prompt"
+
+    def test_build_aider_cmd_writes_prompt(self, tmp_path: Path) -> None:
+        """_build_aider_cmd must call _write_aider_prompt with the generated prompt."""
+        spec = VALID_SPEC
+        with patch("aider_builder._write_aider_prompt") as mock_write:
+            _build_aider_cmd(_TIER1_MODEL, spec, "valid_001")
+        mock_write.assert_called_once()
+        written_prompt = mock_write.call_args[0][0]
+        assert isinstance(written_prompt, str)
+        assert len(written_prompt) > 0
+
+
+# ---------------------------------------------------------------------------
+# _write_build_result
+# ---------------------------------------------------------------------------
+
+
+class TestWriteBuildResult:
+    def test_writes_valid_json(self) -> None:
+        import json
+
+        _write_build_result("my_spec", [1, 2], 2, True)
+        result = json.loads(Path("/tmp/aider_build_result.json").read_text(encoding="utf-8"))
+        assert result["spec_name"] == "my_spec"
+        assert result["tiers_attempted"] == [1, 2]
+        assert result["final_tier"] == 2
+        assert result["success"] is True
+        assert result["level"] == 1
+
+    def test_custom_level(self) -> None:
+        import json
+
+        _write_build_result("spec_x", [1], 1, False, level=3)
+        result = json.loads(Path("/tmp/aider_build_result.json").read_text(encoding="utf-8"))
+        assert result["level"] == 3
+        assert result["success"] is False
+
+    def test_overwrites_on_subsequent_calls(self) -> None:
+        import json
+
+        _write_build_result("spec_a", [1], 1, True)
+        _write_build_result("spec_b", [1, 2, 3], 3, False)
+        result = json.loads(Path("/tmp/aider_build_result.json").read_text(encoding="utf-8"))
+        assert result["spec_name"] == "spec_b"
+        assert result["tiers_attempted"] == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# _snapshot_strategy_for_tier
+# ---------------------------------------------------------------------------
+
+
+class TestSnapshotStrategyForTier:
+    def test_copies_file_when_present(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        strategy_dir = tmp_path / "strategies" / "my_spec"
+        strategy_dir.mkdir(parents=True)
+        (strategy_dir / "main.py").write_text("# strategy code\n", encoding="utf-8")
+
+        _snapshot_strategy_for_tier("my_spec", 2)
+
+        snapshot = Path("/tmp/strategy_t2.py")
+        assert snapshot.exists()
+        assert snapshot.read_text(encoding="utf-8") == "# strategy code\n"
+
+    def test_no_error_when_file_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        # strategies/my_spec/main.py does NOT exist — should not raise
+        _snapshot_strategy_for_tier("my_spec", 1)
+
+
+# ---------------------------------------------------------------------------
+# build() artifact side-effects
+# ---------------------------------------------------------------------------
+
+
+class TestBuildArtifactSideEffects:
+    def test_build_writes_build_result_on_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        monkeypatch.chdir(tmp_path)
+        ok_result = TierRunResult(True, 1, _TIER1_MODEL, 1, "", "ok")
+        with patch("aider_builder.run_tier_1", return_value=ok_result), \
+             patch("aider_builder._write_step_summary"), \
+             patch("aider_builder._snapshot_strategy_for_tier"):
+            build(str(VALID_SPEC))
+
+        result_path = Path("/tmp/aider_build_result.json")
+        assert result_path.exists()
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+        assert data["spec_name"] == "valid_001"
+        assert data["success"] is True
+        assert data["final_tier"] == 1
+        assert data["tiers_attempted"] == [1]
+
+    def test_build_writes_build_result_on_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        monkeypatch.chdir(tmp_path)
+        fail = TierRunResult(False, 1, _TIER1_MODEL, 30, "rate_limit", "")
+        with patch("aider_builder.run_tier_1", return_value=fail), \
+             patch("aider_builder.run_tier_2", return_value=fail), \
+             patch("aider_builder.run_tier_3", return_value=fail), \
+             patch("aider_builder.run_tier_4", return_value=fail), \
+             patch("aider_builder._write_step_summary"), \
+             patch("aider_builder._snapshot_strategy_for_tier"):
+            build(str(VALID_SPEC))
+
+        result_path = Path("/tmp/aider_build_result.json")
+        assert result_path.exists()
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+        assert data["success"] is False
+        assert len(data["tiers_attempted"]) == 4
+
+    def test_build_snapshots_strategy_per_tier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        fail_1 = TierRunResult(False, 1, _TIER1_MODEL, 5, "timeout", "")
+        ok_2 = TierRunResult(True, 2, _TIER2_MODEL, 2, "", "ok")
+        with patch("aider_builder.run_tier_1", return_value=fail_1), \
+             patch("aider_builder.run_tier_2", return_value=ok_2), \
+             patch("aider_builder._write_step_summary"), \
+             patch("aider_builder._snapshot_strategy_for_tier") as mock_snap:
+            build(str(VALID_SPEC))
+
+        assert mock_snap.call_count == 2
+        calls = [c[0] for c in mock_snap.call_args_list]
+        assert calls[0] == ("valid_001", 1)
+        assert calls[1] == ("valid_001", 2)

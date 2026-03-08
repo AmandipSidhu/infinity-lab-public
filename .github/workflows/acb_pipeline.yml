@@ -700,6 +700,91 @@ jobs:
             git push || echo "::warning::Could not push E2E report to ${PRIVATE_REPO} — report exists in the workflow artifacts only."
           fi
 
+      - name: Persist run artifacts to infinity-lab-private
+        if: always()
+        env:
+          INFINITY_PUBLIC_TO_PRIVATE_ACCESS: ${{ secrets.INFINITY_PUBLIC_TO_PRIVATE_ACCESS }}
+        run: |
+          set -euo pipefail
+          PRIVATE_REPO="AmandipSidhu/infinity-lab-private"
+          BUILD_RESULT="/tmp/aider_build_result.json"
+          SPEC_FILE="${{ matrix.spec_file }}"
+
+          if [ -z "${INFINITY_PUBLIC_TO_PRIVATE_ACCESS:-}" ]; then
+            echo "::warning::INFINITY_PUBLIC_TO_PRIVATE_ACCESS not set — run artifacts not persisted."
+            exit 0
+          fi
+
+          if [ ! -f "${BUILD_RESULT}" ]; then
+            echo "::warning::${BUILD_RESULT} not found — aider-build was skipped or produced no result. Nothing to persist."
+            exit 0
+          fi
+
+          DATE=$(date -u +%Y-%m-%d)
+
+          # Parse all needed fields from the JSON in a single Python invocation.
+          eval "$(python - <<'PYEOF'
+          import json, sys
+          d = json.load(open("/tmp/aider_build_result.json"))
+          print(f"SPEC_NAME={d['spec_name']}")
+          print(f"LEVEL={d.get('level', 1)}")
+          print(f"TIERS={' '.join(str(t) for t in d['tiers_attempted'])}")
+          PYEOF
+          )"
+
+          git clone --depth=1 \
+            "https://x-access-token:${INFINITY_PUBLIC_TO_PRIVATE_ACCESS}@github.com/${PRIVATE_REPO}.git" \
+            /tmp/infinity-lab-private-runs
+
+          cd /tmp/infinity-lab-private-runs
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          COMMITTED=false
+          for TIER in ${TIERS}; do
+            RUN_DIR="runs/${DATE}_${SPEC_NAME}_l${LEVEL}_t${TIER}"
+            mkdir -p "${RUN_DIR}"
+
+            # main.py — per-tier strategy snapshot written by aider_builder.py
+            STRATEGY_SNAPSHOT="/tmp/strategy_t${TIER}.py"
+            if [ -f "${STRATEGY_SNAPSHOT}" ]; then
+              cp "${STRATEGY_SNAPSHOT}" "${RUN_DIR}/main.py"
+            elif [ -f "${GITHUB_WORKSPACE}/strategies/${SPEC_NAME}/main.py" ]; then
+              cp "${GITHUB_WORKSPACE}/strategies/${SPEC_NAME}/main.py" "${RUN_DIR}/main.py"
+            fi
+
+            # backtest_result.json — from lean/QC backtest step
+            if [ -f "/tmp/backtest_result.json" ]; then
+              cp "/tmp/backtest_result.json" "${RUN_DIR}/backtest_result.json"
+            fi
+
+            # aider_prompt.txt — written by aider_builder.py before each Aider invocation
+            if [ -f "/tmp/aider_prompt.txt" ]; then
+              cp "/tmp/aider_prompt.txt" "${RUN_DIR}/aider_prompt.txt"
+            fi
+
+            # spec_snapshot.yaml — copy of the spec file as it was at run time
+            if [ -f "${GITHUB_WORKSPACE}/${SPEC_FILE}" ]; then
+              cp "${GITHUB_WORKSPACE}/${SPEC_FILE}" "${RUN_DIR}/spec_snapshot.yaml"
+            fi
+
+            echo "Staging run folder: ${RUN_DIR}"
+            git add "${RUN_DIR}/"
+            if ! git diff --cached --quiet; then
+              git commit -m "chore(runs): persist ${SPEC_NAME} l${LEVEL} t${TIER} artifacts [skip ci]"
+              COMMITTED=true
+            fi
+          done
+
+          if [ "${COMMITTED}" = "true" ]; then
+            git push || echo "::warning::Could not push run artifacts to ${PRIVATE_REPO} — artifacts are in workflow logs only."
+            echo "## ✅ Run Artifacts Persisted" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+            echo "Tiers committed to \`infinity-lab-private/runs/\`: ${TIERS}" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "No new run artifact folders to commit (all up-to-date)."
+          fi
+
       - name: Test Slack Notification (send Hi)
         if: steps.validate-secrets.outputs.secrets_ok == 'true'
         env:
