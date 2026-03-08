@@ -37,3 +37,4 @@ class SmaCrossoverBot(QCAlgorithm):
             self.Liquidate(self.spy)
             self.position_open = False
             self.Log("SOLD SPY @" + str(price))
+
