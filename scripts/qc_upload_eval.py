@@ -67,7 +67,7 @@ def _qc_auth(user_id: str, api_token: str) -> tuple[dict[str, str], tuple[str, s
     """Build HTTP Basic auth tuple and Timestamp header for a QC API request."""
     ts = str(int(time.time()))
     token_hash = hashlib.sha256(
-        f"{user_id}:{api_token}:{ts}".encode("utf-8")
+        f"{api_token}:{ts}".encode("utf-8")
     ).hexdigest()
     headers = {"Timestamp": ts}
     return headers, (user_id, token_hash)
