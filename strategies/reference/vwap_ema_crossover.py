@@ -38,3 +38,4 @@ class VWAPCrossoverStrategy(QCAlgorithm):
             if self.Portfolio.Invested:
                 self.Liquidate(self.spy)
                 self.Debug("Sell signal: EMA < VWAP at {}".format(self.Time))
+
