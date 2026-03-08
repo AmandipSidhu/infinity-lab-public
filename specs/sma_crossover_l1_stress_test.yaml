@@ -1,0 +1,50 @@
+metadata:
+  name: "SMA Crossover L1 Stress Test"
+  trading_style: position
+  version: "1.0.0"
+  author: "Infinity Lab"
+  description: >-
+    Simple dual-SMA crossover on SPY using a 10-day and 50-day SMA.
+    Enters long when the 10-day SMA crosses above the 50-day SMA.
+    Exits when the 10-day SMA crosses below the 50-day SMA.
+    Single asset, daily resolution, full allocation on signal.
+
+capital:
+  allocation_usd: 10000
+
+data:
+  instruments:
+    - SPY
+  resolution: daily
+  start_date: "2021-01-01"
+  end_date: "2021-12-31"
+
+signals:
+  entry:
+    - "10-day SMA crosses above 50-day SMA"
+  exit:
+    - "10-day SMA crosses below 50-day SMA"
+
+risk_management:
+  stop_loss:
+    pct: 0.10
+  position_sizing: full_allocation
+  leverage: 1.0
+  max_positions: 1
+
+acceptance_criteria:
+  max_drawdown_pct: 20.0
+  min_sharpe_ratio: 0.40
+  min_profit_factor: 1.1
+  min_trades: 1
+
+assumptions:
+  fees: 0.001
+  slippage: 0.0005
+
+notes: |
+  L1 stress test — Aider must generate from spec alone.
+  Reference: strategies/reference/sma_crossover_simple.py
+  Target: Sharpe >= 0.40, Drawdown <= 20%, period 2021.
+  Do NOT provide the reference file to Aider.
+  Tracked in: UNI-92
