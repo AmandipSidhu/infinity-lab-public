@@ -14,6 +14,7 @@ Covers:
 - _extract_error_fingerprint and _extract_test_pass_rate
 - _backoff_wait: monotonic growth and jitter boundaries
 - _write_step_summary: correct Markdown content
+- _run_qc_eval and QC eval gate: fail→continue, pass→success, skipped when no creds
 - build(): success on Tier 1, escalation through all tiers, missing spec file
 - main(): exit codes
 """
@@ -53,7 +54,9 @@ from aider_builder import (  # noqa: E402
     _detect_syntax_error,
     _extract_error_fingerprint,
     _extract_test_pass_rate,
+    _format_qc_feedback,
     _read_backtest_metrics,
+    _run_qc_eval,
     _write_step_summary,
     build,
     main,
@@ -244,7 +247,7 @@ class TestWriteStepSummary:
         assert "**Tiers attempted**: 1" in content
         assert "**Iterations**: 5" in content
         assert "**Result**: SUCCESS" in content
-        assert "**Strategy file**: `strategies/my_strategy.py`" in content
+        assert "**Strategy file**: `strategies/my_strategy/main.py`" in content
         assert "**Test file**: `tests/test_my_strategy.py`" in content
 
     def test_failure_includes_diagnostic(self, tmp_path: Path) -> None:
@@ -285,8 +288,9 @@ class TestCommitAndPush:
     def test_commits_and_pushes_when_diff_is_nonempty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """When git diff --cached --quiet exits non-zero (changes staged), commit and push."""
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "strategies").mkdir()
-        (tmp_path / "strategies" / "my_strat.py").write_text("\n".join(f"# line {i}" for i in range(20)) + "\n")
+        (tmp_path / "strategies" / "my_strat").mkdir(parents=True)
+        dummy_code = "\n".join(f"x_{i} = {i}" for i in range(90)) + "\n"
+        (tmp_path / "strategies" / "my_strat" / "main.py").write_text(dummy_code)
         with patch("aider_builder.subprocess.run") as mock_run:
             mock_run.return_value = self._make_run(1)  # diff exit 1 → changes present
             _commit_and_push("my_strat", 1, "some-model")
@@ -295,7 +299,7 @@ class TestCommitAndPush:
         cmds = [c[0][0] for c in calls]
         assert ["git", "config", "user.name", "github-actions[bot]"] in cmds
         assert ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"] in cmds
-        assert ["git", "add", "strategies/my_strat.py", "tests/test_my_strat.py"] in cmds
+        assert ["git", "add", "strategies/my_strat/main.py", "tests/test_my_strat.py"] in cmds
         commit_cmds = [c for c in cmds if c[0:2] == ["git", "commit"]]
         assert len(commit_cmds) == 1
         assert "feat(strategies): aider build my_strat via tier 1 (some-model)" in commit_cmds[0]
@@ -305,8 +309,9 @@ class TestCommitAndPush:
     def test_skips_commit_when_no_staged_changes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """When git diff --cached --quiet exits 0 (nothing staged), skip commit and push."""
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "strategies").mkdir()
-        (tmp_path / "strategies" / "my_strat.py").write_text("\n".join(f"# line {i}" for i in range(20)) + "\n")
+        (tmp_path / "strategies" / "my_strat").mkdir(parents=True)
+        dummy_code = "\n".join(f"x_{i} = {i}" for i in range(90)) + "\n"
+        (tmp_path / "strategies" / "my_strat" / "main.py").write_text(dummy_code)
         with patch("aider_builder.subprocess.run") as mock_run:
             mock_run.return_value = self._make_run(0)  # diff exit 0 → no changes
             _commit_and_push("my_strat", 2, "other-model")
@@ -321,8 +326,9 @@ class TestCommitAndPush:
     def test_commit_message_format(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Commit message follows the required format."""
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "strategies").mkdir()
-        (tmp_path / "strategies" / "vwap_probe.py").write_text("\n".join(f"# line {i}" for i in range(20)) + "\n")
+        (tmp_path / "strategies" / "vwap_probe").mkdir(parents=True)
+        dummy_code = "\n".join(f"x_{i} = {i}" for i in range(90)) + "\n"
+        (tmp_path / "strategies" / "vwap_probe" / "main.py").write_text(dummy_code)
         with patch("aider_builder.subprocess.run") as mock_run:
             mock_run.return_value = self._make_run(1)
             _commit_and_push("vwap_probe", 3, "openai/gpt-4o")
@@ -337,18 +343,18 @@ class TestCommitAndPush:
     def test_raises_file_not_found_when_strategy_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """FileNotFoundError is raised when strategy file does not exist after Aider exits 0."""
         monkeypatch.chdir(tmp_path)
-        # Deliberately do NOT create strategies/my_strat.py
+        # Deliberately do NOT create strategies/my_strat/main.py
         with patch("aider_builder.subprocess.run"):
             with pytest.raises(FileNotFoundError, match="Strategy file not written by Aider"):
                 _commit_and_push("my_strat", 1, "some-model")
 
     def test_raises_file_not_found_when_strategy_is_stub_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """FileNotFoundError is raised when strategy file exists but has fewer than 20 lines (stub-only)."""
+        """FileNotFoundError is raised when strategy file exists but has fewer than 80 lines (stub-only)."""
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "strategies").mkdir()
-        (tmp_path / "strategies" / "my_strat.py").write_text('"""Strategy stub for my_strat."""\n')
+        (tmp_path / "strategies" / "my_strat").mkdir(parents=True)
+        (tmp_path / "strategies" / "my_strat" / "main.py").write_text('"""Strategy stub for my_strat."""\n')
         with patch("aider_builder.subprocess.run"):
-            with pytest.raises(FileNotFoundError, match="Aider did not fill the stub"):
+            with pytest.raises(FileNotFoundError, match="Aider produced a stub or skeleton"):
                 _commit_and_push("my_strat", 1, "some-model")
 
 
@@ -406,7 +412,7 @@ class TestRunTier1:
         assert result.tier == 1
         assert result.model == _TIER1_MODEL
         assert result.iterations_used == 1
-        mock_cap.assert_called_once_with("valid_001", 1, _TIER1_MODEL)
+        mock_cap.assert_called_once_with("valid_001", 1, _TIER1_MODEL, pre_run_hash=None)
 
     def test_escalates_on_timeout(self, tmp_path: Path) -> None:
         with patch(
@@ -476,7 +482,7 @@ class TestRunTier2:
         assert result.success is True
         assert result.tier == 2
         assert result.model == _TIER2_MODEL
-        mock_cap.assert_called_once_with("valid_001", 2, _TIER2_MODEL)
+        mock_cap.assert_called_once_with("valid_001", 2, _TIER2_MODEL, pre_run_hash=None)
 
     def test_escalates_on_timeout(self) -> None:
         with patch(
@@ -526,7 +532,7 @@ class TestRunTier3:
         assert result.success is True
         assert result.tier == 3
         assert result.model == _TIER3_MODEL
-        mock_cap.assert_called_once_with("valid_001", 3, _TIER3_MODEL)
+        mock_cap.assert_called_once_with("valid_001", 3, _TIER3_MODEL, pre_run_hash=None)
 
     def test_escalates_on_stuck_pattern(self) -> None:
         # Same pass rate for _STUCK_ITERATIONS_THRESHOLD + 1 iterations (need prev to be set first).
@@ -586,7 +592,7 @@ class TestRunTier4:
         assert result.success is True
         assert result.tier == 4
         assert result.model == _TIER4_MODEL
-        mock_cap.assert_called_once_with("valid_001", 4, _TIER4_MODEL)
+        mock_cap.assert_called_once_with("valid_001", 4, _TIER4_MODEL, pre_run_hash=None)
 
     def test_all_tiers_exhausted(self) -> None:
         outputs = [_fail("Error: could not complete task")] * _MAX_ITERATIONS
@@ -603,6 +609,74 @@ class TestRunTier4:
             result = run_tier_4(VALID_SPEC, "valid_001")
         assert result.success is True
         assert result.iterations_used == 6
+
+
+# ---------------------------------------------------------------------------
+# QC eval gate
+# ---------------------------------------------------------------------------
+
+
+class TestQCEval:
+    """Tests for the _run_qc_eval gate wired into _run_free_tier and run_tier_4."""
+
+    def test_qc_eval_fail_causes_loop_to_continue(self) -> None:
+        """When QC eval fails, the tier loop continues instead of returning success."""
+        qc_fail = {
+            "passed": False,
+            "result": "FAIL",
+            "violations": [
+                {"constraint": "sharpe_ratio", "message": "Sharpe 0.23 below min 0.50"},
+            ],
+        }
+        qc_pass = {"passed": True, "result": "PASS", "violations": []}
+        with patch("aider_builder._run_aider", return_value=_ok()), \
+             patch("aider_builder._commit_and_push"), \
+             patch("aider_builder._run_qc_eval", side_effect=[qc_fail, qc_pass]), \
+             patch.dict(os.environ, {"QC_USER_ID": "123", "QC_API_TOKEN": "tok"}):
+            result = run_tier_1(VALID_SPEC, "valid_001")
+        assert result.success is True
+        assert result.iterations_used == 2  # first iter failed QC, second passed
+
+    def test_qc_eval_pass_returns_success(self) -> None:
+        """When QC eval passes, the tier returns TierRunResult(success=True) immediately."""
+        qc_pass = {"passed": True, "result": "PASS", "violations": []}
+        with patch("aider_builder._run_aider", return_value=_ok()), \
+             patch("aider_builder._commit_and_push"), \
+             patch("aider_builder._run_qc_eval", return_value=qc_pass), \
+             patch.dict(os.environ, {"QC_USER_ID": "123", "QC_API_TOKEN": "tok"}):
+            result = run_tier_1(VALID_SPEC, "valid_001")
+        assert result.success is True
+        assert result.iterations_used == 1
+
+    def test_qc_eval_skipped_when_no_qc_creds(self) -> None:
+        """QC eval is skipped entirely when QC_USER_ID env var is not set."""
+        env_without_qc = {
+            k: v for k, v in os.environ.items()
+            if k not in ("QC_USER_ID", "QC_API_TOKEN")
+        }
+        with patch("aider_builder._run_aider", return_value=_ok()), \
+             patch("aider_builder._commit_and_push"), \
+             patch("aider_builder._run_qc_eval") as mock_qc, \
+             patch.dict(os.environ, env_without_qc, clear=True):
+            result = run_tier_1(VALID_SPEC, "valid_001")
+        assert result.success is True
+        mock_qc.assert_not_called()
+
+    def test_format_qc_feedback_includes_violations(self) -> None:
+        """_format_qc_feedback builds a prompt block listing all violations."""
+        qc_result = {
+            "result": "FAIL",
+            "violations": [
+                {"constraint": "sharpe_ratio", "message": "Sharpe 0.23 below min 0.50"},
+                {"constraint": "max_drawdown", "message": "Drawdown 0.38 exceeds 0.25"},
+            ],
+        }
+        feedback = _format_qc_feedback(qc_result)
+        assert "QC BACKTEST FEEDBACK" in feedback
+        assert "sharpe_ratio" in feedback
+        assert "Sharpe 0.23 below min 0.50" in feedback
+        assert "max_drawdown" in feedback
+        assert "Fix the strategy" in feedback
 
 
 # ---------------------------------------------------------------------------
@@ -624,8 +698,7 @@ class TestBuild:
         assert call_args[5] is True  # success=True
 
     def test_escalates_through_all_tiers_to_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # When all 4 tiers fail, build() writes a stub strategy and returns False
-        # so CI fails visibly instead of going hollow green.
+        # When all 4 tiers fail, build() returns False and writes a failure summary.
         monkeypatch.chdir(tmp_path)
         fail_result_1 = TierRunResult(False, 1, _TIER1_MODEL, 30, "rate_limit", "")
         fail_result_2 = TierRunResult(False, 2, _TIER2_MODEL, 30, "daily_limit", "")
@@ -636,18 +709,13 @@ class TestBuild:
              patch("aider_builder.run_tier_2", return_value=fail_result_2), \
              patch("aider_builder.run_tier_3", return_value=fail_result_3), \
              patch("aider_builder.run_tier_4", return_value=fail_result_4), \
-             patch("aider_builder._write_stub_strategy") as mock_stub, \
-             patch("aider_builder._commit_and_push") as mock_cap, \
              patch("aider_builder._write_step_summary") as mock_summary:
-            mock_stub.return_value = Path("strategies/valid_001.py")
             result = build(str(VALID_SPEC))
 
-        assert result is False  # stub written → CI fails visibly
-        mock_stub.assert_called_once()
-        mock_cap.assert_called_once_with("valid_001", 4, _TIER4_MODEL)
+        assert result is False
         mock_summary.assert_called_once()
         call_args = mock_summary.call_args[0]
-        assert call_args[5] is True  # success=True (stub counts as success in summary)
+        assert call_args[5] is False  # success=False (all tiers exhausted)
 
     def test_success_on_tier_3(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
@@ -663,7 +731,7 @@ class TestBuild:
 
         assert result is True
         call_args = mock_summary.call_args[0]
-        assert call_args[2] == _TIER3_MODEL  # model_used
+        assert call_args[2] == _TIER3_MODEL + "+thinking"  # model_used includes "+thinking" suffix
         assert call_args[3] == 3  # tiers_attempted
         assert call_args[5] is True
 
