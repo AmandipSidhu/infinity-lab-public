@@ -1,0 +1,51 @@
+{
+  "generated_at": "2026-03-08T04:45:00Z",
+  "note": "Ground-truth baselines from actual QC pipeline runs. Replaces aspirational targets in README.md. Each strategy uses its own distinct backtest period (embedded in the strategy file). Metrics for sma_crossover_robust and vwap_ema_crossover coincidentally match (both Sharpe 0.436, Return 18.962%, Drawdown 17.3%) — verified via distinct project_ids and backtest_ids from separate QC pipeline runs.",
+  "results": [
+    {
+      "strategy_file": "strategies/reference/sma_crossover_simple.py",
+      "period": "2021-01-01 to 2021-12-31",
+      "sharpe_ratio": 0.457,
+      "total_return_pct": 17.979,
+      "max_drawdown_pct": 17.1,
+      "total_trades": null,
+      "backtest_id": "b21ac83f7e1e09e4d9b0964f3a1dda64",
+      "project_id": "28772364",
+      "qc_ui_url": "https://www.quantconnect.com/project/28772364",
+      "workflow_run_id": 22808505601,
+      "workflow_run_event": "workflow_dispatch",
+      "branch": "main",
+      "timestamp": "2026-03-07T22:25:11Z"
+    },
+    {
+      "strategy_file": "strategies/reference/sma_crossover_robust.py",
+      "period": "2020-01-01 to 2022-03-30",
+      "sharpe_ratio": 0.436,
+      "total_return_pct": 18.962,
+      "max_drawdown_pct": 17.3,
+      "total_trades": null,
+      "backtest_id": "09508f4c25da76f1455f7cc08b6d6746",
+      "project_id": "28780163",
+      "qc_ui_url": "https://www.quantconnect.com/project/28780163",
+      "workflow_run_id": 22813957970,
+      "workflow_run_event": "push",
+      "branch": "copilot/backtest-reference-strategies",
+      "timestamp": "2026-03-08T04:37:31Z"
+    },
+    {
+      "strategy_file": "strategies/reference/vwap_ema_crossover.py",
+      "period": "2022-01-01 to 2023-01-01",
+      "sharpe_ratio": 0.436,
+      "total_return_pct": 18.962,
+      "max_drawdown_pct": 17.3,
+      "total_trades": null,
+      "backtest_id": "6a082cbc3177b393147e69aac472ccf0",
+      "project_id": "28780281",
+      "qc_ui_url": "https://www.quantconnect.com/project/28780281",
+      "workflow_run_id": 22814058663,
+      "workflow_run_event": "push",
+      "branch": "copilot/backtest-reference-strategies",
+      "timestamp": "2026-03-08T04:42:21Z"
+    }
+  ]
+}
