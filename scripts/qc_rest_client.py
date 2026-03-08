@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """QuantConnect REST API Client — Phase 1 of the ACB E2E Rebuild.
 
-Uploads ``strategies/reference/sma_crossover_simple.py`` to QuantConnect via
-the REST API, compiles it, runs a backtest, and returns the Sharpe ratio.
+Uploads a strategy file to QuantConnect via the REST API as ``main.py``
+(the QC entry point), compiles it, runs a backtest, and returns the
+Sharpe ratio.
 
 Authentication:
   HTTP Basic Auth + SHA-256 HMAC timestamp.
@@ -11,7 +12,8 @@ Authentication:
 
 QC API Endpoints used:
   POST /projects/create      — create throwaway project
-  POST /files/create         — upload strategy source
+  POST /files/update         — overwrite default main.py with strategy source
+  GET  /files/read           — verify upload content before compile
   POST /compile/create       — trigger compilation
   GET  /compile/read         — poll compile status
   POST /backtests/create     — trigger backtest
@@ -69,6 +71,9 @@ _POLL_TIMEOUT_SECONDS: int = 600          # 10 minutes total
 _MAX_RETRIES: int = 3
 _RETRY_BACKOFF_BASE_SECONDS: int = 30     # 30s, 60s, 90s
 
+# QC entry-point filename — new Python projects always have this as main file
+_QC_ENTRY_POINT: str = "main.py"
+
 # Compile states that indicate a successful build
 _COMPILE_SUCCESS_STATES: frozenset[str] = frozenset(
     {"BuildSuccess", "Success", "success", "build_success"}
@@ -98,6 +103,10 @@ class QCTimeoutError(RuntimeError):
 
 class QCCompileError(RuntimeError):
     """Raised when the strategy fails to compile on QuantConnect."""
+
+
+class QCUploadVerifyError(RuntimeError):
+    """Raised when uploaded file content does not match expected strategy."""
 
 
 # ---------------------------------------------------------------------------
@@ -323,22 +332,59 @@ def create_project(user_id: str, api_token: str, project_name: str) -> int:
     return project_id_int
 
 
-def upload_file(
+def upload_strategy(
     user_id: str,
     api_token: str,
     project_id: int,
-    filename: str,
     content: str,
 ) -> None:
-    """Upload ``content`` as ``filename`` into ``project_id``."""
-    print(f"[qc_rest_client] Uploading file '{filename}' to project {project_id}…")
+    """Overwrite the default main.py in ``project_id`` with ``content``.
+
+    Uses ``files/update`` (not ``files/create``) to replace the stub that QC
+    injects at project creation.  Then calls ``files/read`` to verify the
+    content actually landed before proceeding to compile.
+
+    Raises ``QCUploadVerifyError`` if the verified content does not match.
+    """
+    print(
+        f"[qc_rest_client] Overwriting '{_QC_ENTRY_POINT}' "
+        f"in project {project_id} via files/update…"
+    )
     _http_post(
-        "files/create",
+        "files/update",
         user_id,
         api_token,
-        {"projectId": project_id, "name": filename, "content": content},
+        {"projectId": project_id, "name": _QC_ENTRY_POINT, "content": content},
     )
-    print(f"[qc_rest_client] File '{filename}' uploaded.")
+    print(f"[qc_rest_client] files/update succeeded — verifying via files/read…")
+
+    # Verify: read back and confirm our content is present
+    read_body = _http_get(
+        "files/read",
+        user_id,
+        api_token,
+        params={"projectId": project_id, "fileName": _QC_ENTRY_POINT},
+    )
+    files = read_body.get("files", [])
+    if not files:
+        raise QCUploadVerifyError(
+            f"files/read returned no files for project {project_id} "
+            f"after upload — cannot verify content."
+        )
+    # Check first 120 chars of content as a lightweight fingerprint
+    remote_content: str = files[0].get("content", "")
+    expected_prefix = content[:120].strip()
+    remote_prefix = remote_content[:120].strip()
+    if expected_prefix != remote_prefix:
+        raise QCUploadVerifyError(
+            f"Upload verification failed for project {project_id}.\n"
+            f"  Expected prefix: {expected_prefix!r}\n"
+            f"  Remote prefix:   {remote_prefix!r}"
+        )
+    print(
+        f"[qc_rest_client] Upload verified — '{_QC_ENTRY_POINT}' "
+        f"content confirmed in project {project_id}."
+    )
 
 
 def compile_project(
@@ -501,7 +547,6 @@ def poll_backtest(
                 sub = result.get(sub_key)
                 if isinstance(sub, dict):
                     print(f"[qc_rest_client] {sub_key} keys: {list(sub.keys())}", file=sys.stderr)
-                    # Print any key that looks trade-related
                     for k, v in sub.items():
                         if "trade" in k.lower() or "order" in k.lower():
                             print(f"[qc_rest_client]   {k!r}: {v!r}", file=sys.stderr)
@@ -561,11 +606,11 @@ def run_backtest(
     api_token: str,
     output_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Run the full QC pipeline: create → upload → compile → backtest.
+    """Run the full QC pipeline: create → upload → verify → compile → backtest.
 
     Returns the result dict (same schema written to ``output_path``).
-    Raises ``QCAuthError``, ``QCAPIError``, ``QCTimeoutError``, or
-    ``QCCompileError`` on failure.
+    Raises ``QCAuthError``, ``QCAPIError``, ``QCTimeoutError``,
+    ``QCCompileError``, or ``QCUploadVerifyError`` on failure.
     """
     if not strategy_file.is_file():
         raise FileNotFoundError(f"Strategy file not found: {strategy_file}")
@@ -579,12 +624,8 @@ def run_backtest(
     # 1. Create project
     project_id = create_project(user_id, api_token, project_name)
 
-    # 2. Upload strategy file (use the source filename)
-    upload_file(
-        user_id, api_token, project_id,
-        filename=strategy_file.name,
-        content=strategy_code,
-    )
+    # 2. Overwrite default main.py with strategy + verify content landed
+    upload_strategy(user_id, api_token, project_id, strategy_code)
 
     # 3. Compile
     compile_id = compile_project(user_id, api_token, project_id)
@@ -622,7 +663,6 @@ def run_backtest(
     )
     total_trades = _extract_int_stat(
         backtest_result,
-        # QC REST API variants (probe all)
         "TotalNumberOfTrades",
         "Total Number of Trades",
         "Total Trades",
@@ -719,6 +759,9 @@ def main(argv: list[str] | None = None) -> int:
         result = run_backtest(strategy_file, user_id, api_token, output_path)
     except QCAuthError as exc:
         print(f"[qc_rest_client] AUTH ERROR: {exc}", file=sys.stderr)
+        return 1
+    except QCUploadVerifyError as exc:
+        print(f"[qc_rest_client] UPLOAD VERIFY ERROR: {exc}", file=sys.stderr)
         return 1
     except QCCompileError as exc:
         print(f"[qc_rest_client] COMPILE ERROR: {exc}", file=sys.stderr)
