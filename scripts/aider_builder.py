@@ -99,7 +99,7 @@ class TierRunResult:
 # ---------------------------------------------------------------------------
 
 
-def _build_aider_prompt(spec_file: Path, spec_name: str) -> str:
+def _build_aider_prompt(spec_file: Path, spec_name: str, qc_feedback: str | None = None) -> str:
     # Load spec to include actual signal strings verbatim in the prompt.
     try:
         with spec_file.open(encoding="utf-8") as fh:
@@ -121,7 +121,7 @@ def _build_aider_prompt(spec_file: Path, spec_name: str) -> str:
     constraints: dict = spec_data.get("constraints", {})
     max_hold = constraints.get("max_holding_minutes", 60)
 
-    return (
+    prompt = (
         f"Read the spec file at {spec_file} carefully. "
         f"CREATE a complete, production-quality QuantConnect LEAN algorithm "
         f"in strategies/{spec_name}/main.py that fully implements ALL signals and rules in the spec.\n\n"
@@ -148,6 +148,9 @@ def _build_aider_prompt(spec_file: Path, spec_name: str) -> str:
         f"9. Also write comprehensive unit tests in tests/test_{spec_name}.py.\n"
         f"10. Do NOT modify any files outside the strategies/ and tests/ directories."
     )
+    if qc_feedback:
+        prompt += f"\n\n{qc_feedback}"
+    return prompt
 
 
 def _build_aider_cmd(
@@ -155,10 +158,11 @@ def _build_aider_cmd(
     spec_file: Path,
     spec_name: str,
     extra_args: list[str] | None = None,
+    qc_feedback: str | None = None,
 ) -> list[str]:
     strategy_file = f"strategies/{spec_name}/main.py"
     test_file = f"tests/test_{spec_name}.py"
-    prompt = _build_aider_prompt(spec_file, spec_name)
+    prompt = _build_aider_prompt(spec_file, spec_name, qc_feedback=qc_feedback)
     cmd = [
         "aider",
         "--model", model,
@@ -269,12 +273,13 @@ def _run_aider(
     spec_name: str,
     timeout: int | None = None,
     extra_args: list[str] | None = None,
+    qc_feedback: str | None = None,
 ) -> AiderResult:
     """Run aider once and return an AiderResult.
 
     Raises subprocess.TimeoutExpired if timeout is set and exceeded.
     """
-    cmd = _build_aider_cmd(model, spec_file, spec_name, extra_args=extra_args)
+    cmd = _build_aider_cmd(model, spec_file, spec_name, extra_args=extra_args, qc_feedback=qc_feedback)
     start = time.monotonic()
     result = subprocess.run(
         cmd,
@@ -377,6 +382,58 @@ def _backoff_wait(attempt: int) -> float:
 
 
 # ---------------------------------------------------------------------------
+# QC eval helpers
+# ---------------------------------------------------------------------------
+
+_QC_EVAL_TIMEOUT: int = 700  # QC backtests can take up to 10 min
+
+
+def _run_qc_eval(spec_file: Path, spec_name: str) -> dict[str, Any]:
+    """Run qc_upload_eval.py as a subprocess and return the parsed JSON result.
+
+    Calls ``python scripts/qc_upload_eval.py`` with the given spec and
+    strategy file, reads the JSON output from ``/tmp/qc_eval_output.json``,
+    and returns the parsed dict.
+
+    On any exception (FileNotFoundError, subprocess error, JSONDecodeError),
+    returns ``{"passed": False, "result": "FAIL", "error": str(exc)}``.
+    """
+    output_path = "/tmp/qc_eval_output.json"
+    strategy_path = f"strategies/{spec_name}/main.py"
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "scripts/qc_upload_eval.py",
+                "--spec", str(spec_file),
+                "--strategy", strategy_path,
+                "--output", output_path,
+            ],
+            check=False,
+            timeout=_QC_EVAL_TIMEOUT,
+        )
+        return json.loads(Path(output_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"passed": False, "result": "FAIL", "error": str(exc)}
+
+
+def _format_qc_feedback(qc_result: dict[str, Any]) -> str:
+    """Format QC eval failure details as a prompt feedback block."""
+    violations = qc_result.get("violations", [])
+    lines = [
+        "QC BACKTEST FEEDBACK (previous attempt failed):",
+        f"- Result: {qc_result.get('result', 'FAIL')}",
+        "- Violations:",
+    ]
+    for v in violations:
+        constraint = v.get("constraint", "unknown")
+        message = v.get("message", "")
+        lines.append(f"  \u2022 {constraint}: {message}")
+    lines.append("Fix the strategy to address these specific issues before the next backtest.")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Shared free-tier runner logic
 # ---------------------------------------------------------------------------
 
@@ -399,6 +456,7 @@ def _run_free_tier(
     same_error_count = 0
     last_error_fp = ""
     rate_limit_retries = 0
+    qc_feedback: str | None = None
 
     for iteration in range(_MAX_ITERATIONS):
         strategy_path = Path(f"strategies/{spec_name}/main.py")
@@ -406,7 +464,8 @@ def _run_free_tier(
 
         try:
             result = _run_aider(
-                model, spec_file, spec_name, timeout=timeout, extra_args=extra_args
+                model, spec_file, spec_name, timeout=timeout, extra_args=extra_args,
+                qc_feedback=qc_feedback,
             )
         except subprocess.TimeoutExpired:
             return TierRunResult(False, tier_num, model, iteration + 1, "timeout", "")
@@ -420,6 +479,16 @@ def _run_free_tier(
                 return TierRunResult(
                     False, tier_num, model, iteration + 1, "file_not_written", str(exc)
                 )
+            if os.environ.get("QC_USER_ID") and os.environ.get("QC_API_TOKEN"):
+                qc_result = _run_qc_eval(spec_file, spec_name)
+                if not qc_result.get("passed", False):
+                    violations = qc_result.get("violations", [])
+                    print(
+                        f"[aider_builder] QC eval failed on iteration {iteration + 1}: "
+                        f"{violations}"
+                    )
+                    qc_feedback = _format_qc_feedback(qc_result)
+                    continue
             return TierRunResult(True, tier_num, model, iteration + 1, "", combined)
 
         # Daily quota: escalate immediately (no point retrying today).
@@ -593,13 +662,17 @@ def run_tier_4(spec_file: Path, spec_name: str) -> TierRunResult:
     """
     model = _TIER4_MODEL
     last_output = ""
+    qc_feedback: str | None = None
 
     for iteration in range(_MAX_ITERATIONS):
         strategy_path = Path(f"strategies/{spec_name}/main.py")
         pre_run_hash = _file_sha256(strategy_path)
 
         try:
-            result = _run_aider(model, spec_file, spec_name, timeout=_TIER4_SUBPROCESS_TIMEOUT)
+            result = _run_aider(
+                model, spec_file, spec_name, timeout=_TIER4_SUBPROCESS_TIMEOUT,
+                qc_feedback=qc_feedback,
+            )
         except subprocess.TimeoutExpired:
             return TierRunResult(False, 4, model, iteration + 1, "timeout", last_output)
         last_output = result.stdout + result.stderr
@@ -609,6 +682,16 @@ def run_tier_4(spec_file: Path, spec_name: str) -> TierRunResult:
                 _commit_and_push(spec_name, 4, model, pre_run_hash=pre_run_hash)
             except FileNotFoundError as exc:
                 return TierRunResult(False, 4, model, iteration + 1, "file_not_written", str(exc))
+            if os.environ.get("QC_USER_ID") and os.environ.get("QC_API_TOKEN"):
+                qc_result = _run_qc_eval(spec_file, spec_name)
+                if not qc_result.get("passed", False):
+                    violations = qc_result.get("violations", [])
+                    print(
+                        f"[aider_builder] QC eval failed on iteration {iteration + 1}: "
+                        f"{violations}"
+                    )
+                    qc_feedback = _format_qc_feedback(qc_result)
+                    continue
             return TierRunResult(True, 4, model, iteration + 1, "", last_output)
 
     return TierRunResult(
@@ -853,6 +936,33 @@ def _write_step_summary(
             lines.append(f"| Total Return | {total_return} |\n")
         if max_drawdown is not None:
             lines.append(f"| Max Drawdown | {max_drawdown} |\n")
+    qc_eval_path = Path("/tmp/qc_eval_output.json")
+    if qc_eval_path.exists():
+        try:
+            qc_data: dict[str, Any] = json.loads(qc_eval_path.read_text(encoding="utf-8"))
+            qc_result_str = qc_data.get("result", "")
+            qc_violations: list[dict[str, Any]] = qc_data.get("violations", [])
+            qc_violation_count = qc_data.get("violation_count", len(qc_violations))
+            qc_project_id = qc_data.get("project_id")
+            qc_backtest_id = qc_data.get("backtest_id")
+            lines.append("\n### QC Backtest Evaluation\n\n")
+            lines.append("| Field | Value |\n|-------|-------|\n")
+            lines.append(f"| Result | {qc_result_str} |\n")
+            lines.append(f"| Violations | {qc_violation_count} |\n")
+            if qc_project_id:
+                qc_link = f"https://www.quantconnect.com/project/{qc_project_id}"
+                lines.append(f"| Project | [{qc_project_id}]({qc_link}) |\n")
+            if qc_backtest_id:
+                lines.append(f"| Backtest ID | {qc_backtest_id} |\n")
+            if qc_violations:
+                lines.append("\n#### QC Violations\n\n")
+                lines.append("| Constraint | Message |\n|------------|--------|\n")
+                for v in qc_violations:
+                    constraint = v.get("constraint", "")
+                    message = v.get("message", "")
+                    lines.append(f"| {constraint} | {message} |\n")
+        except json.JSONDecodeError:
+            pass
     Path(summary_path).write_text("".join(lines), encoding="utf-8")
 
 
