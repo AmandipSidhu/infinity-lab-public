@@ -572,6 +572,14 @@ def _extract_stat(result: dict[str, Any], *keys: str) -> float | None:
         sub = result.get(sub_key)
         if isinstance(sub, dict):
             search_targets.append(sub)
+    total_perf = result.get("totalPerformance", {})
+    if isinstance(total_perf, dict):
+        trade_stats = total_perf.get("tradeStatistics", {})
+        if isinstance(trade_stats, dict):
+            search_targets.append(trade_stats)
+        portfolio_stats = total_perf.get("portfolioStatistics", {})
+        if isinstance(portfolio_stats, dict):
+            search_targets.append(portfolio_stats)
 
     for key in keys:
         for target in search_targets:
@@ -673,6 +681,8 @@ def run_backtest(
         "Trades",
         "TradeCount",
         "tradeCount",
+        "Total Orders",
+        "totalNumberOfTrades",
     )
 
     backtest_status = "Completed" if backtest_result.get(
