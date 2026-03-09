@@ -722,15 +722,48 @@ jobs:
 
           DATE=$(date -u +%Y-%m-%d)
 
-          # Parse all needed fields from the JSON in a single Python invocation.
-          eval "$(python - <<'PYEOF'
-          import json, sys
-          d = json.load(open("/tmp/aider_build_result.json"))
-          print(f"SPEC_NAME={d['spec_name']}")
-          print(f"LEVEL={d.get('level', 1)}")
-          print(f"TIERS={' '.join(str(t) for t in d['tiers_attempted'])}")
+          # Parse all needed fields from the JSON and export them safely to a
+          # temp env file, then source it. Using a temp file (rather than eval)
+          # avoids shell-injection risks from unexpected JSON values.
+          python - <<'PYEOF'
+          import json
+          import os
+          import sys
+          import shlex
+
+          json_path = "/tmp/aider_build_result.json"
+
+          try:
+              with open(json_path, "r", encoding="utf-8") as f:
+                  data = json.load(f)
+          except Exception as exc:
+              print(f"::warning::Failed to parse {json_path}: {exc}. Artifacts will not be persisted, but workflow will continue.", file=sys.stderr)
+              sys.exit(0)
+
+          spec_name = data.get("spec_name", "")
+          level = data.get("level", 1)
+          tiers_attempted = data.get("tiers_attempted", [])
+          if not isinstance(tiers_attempted, (list, tuple)):
+              print(f"::warning::tiers_attempted in {json_path} has unexpected type {type(tiers_attempted).__name__!r} — defaulting to empty list.", file=sys.stderr)
+              tiers_attempted = []
+          tiers_str = " ".join(str(tier) for tier in tiers_attempted)
+
+          try:
+              with open("/tmp/_acb_build_env.sh", "w", encoding="utf-8") as env_file:
+                  env_file.write(f"SPEC_NAME={shlex.quote(str(spec_name))}\n")
+                  env_file.write(f"LEVEL={shlex.quote(str(level))}\n")
+                  env_file.write(f"TIERS={shlex.quote(tiers_str)}\n")
+          except Exception as exc:
+              print(f"::warning::Failed to write env file: {exc}. Artifacts will not be persisted, but workflow will continue.", file=sys.stderr)
+              sys.exit(0)
           PYEOF
-          )"
+
+          if [ ! -f /tmp/_acb_build_env.sh ]; then
+            echo "::warning::Failed to produce build env file — artifacts not persisted."
+            exit 0
+          fi
+          # shellcheck source=/dev/null
+          . /tmp/_acb_build_env.sh
 
           if ! git clone --depth=1 \
             "https://x-access-token:${INFINITY_PUBLIC_TO_PRIVATE_ACCESS}@github.com/${PRIVATE_REPO}.git" \

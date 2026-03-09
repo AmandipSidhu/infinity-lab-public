@@ -820,7 +820,7 @@ class TestWriteAiderPrompt:
         _write_aider_prompt("second prompt")
         assert target.read_text(encoding="utf-8") == "second prompt"
 
-    def test_build_aider_cmd_writes_prompt(self, tmp_path: Path) -> None:
+    def test_build_aider_cmd_writes_prompt(self) -> None:
         """_build_aider_cmd must call _write_aider_prompt with the generated prompt."""
         spec = VALID_SPEC
         with patch("aider_builder._write_aider_prompt") as mock_write:
