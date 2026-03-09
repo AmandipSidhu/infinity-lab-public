@@ -19,6 +19,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -153,6 +154,15 @@ def _build_aider_prompt(spec_file: Path, spec_name: str, qc_feedback: str | None
     return prompt
 
 
+def _write_aider_prompt(prompt: str) -> None:
+    """Persist the exact Aider prompt to /tmp/aider_prompt.txt.
+
+    The file is overwritten on every invocation so the *most recent* prompt
+    sent to Aider is always available for artifact collection by the CI step.
+    """
+    Path("/tmp/aider_prompt.txt").write_text(prompt, encoding="utf-8")
+
+
 def _build_aider_cmd(
     model: str,
     spec_file: Path,
@@ -163,6 +173,7 @@ def _build_aider_cmd(
     strategy_file = f"strategies/{spec_name}/main.py"
     test_file = f"tests/test_{spec_name}.py"
     prompt = _build_aider_prompt(spec_file, spec_name, qc_feedback=qc_feedback)
+    _write_aider_prompt(prompt)
     cmd = [
         "aider",
         "--model", model,
@@ -967,6 +978,46 @@ def _write_step_summary(
 
 
 # ---------------------------------------------------------------------------
+# Build result writer (artifact persistence support)
+# ---------------------------------------------------------------------------
+
+
+def _write_build_result(
+    spec_name: str,
+    tiers_attempted: list[int],
+    final_tier: int,
+    success: bool,
+    level: int = 1,
+) -> None:
+    """Write /tmp/aider_build_result.json so the CI artifact step can read it.
+
+    Fields:
+      spec_name        — stem of the spec YAML file
+      level            — validation level (default 1; future use)
+      final_tier       — tier that produced the final strategy (or last tier run)
+      tiers_attempted  — ordered list of all tier numbers that were executed
+      success          — whether the build chain succeeded
+    """
+    result: dict[str, Any] = {
+        "spec_name": spec_name,
+        "level": level,
+        "final_tier": final_tier,
+        "tiers_attempted": tiers_attempted,
+        "success": success,
+    }
+    Path("/tmp/aider_build_result.json").write_text(
+        json.dumps(result, indent=2), encoding="utf-8"
+    )
+
+
+def _snapshot_strategy_for_tier(spec_name: str, tier: int) -> None:
+    """Copy the current strategy to /tmp/strategy_t{tier}.py for artifact capture."""
+    src = Path(f"strategies/{spec_name}/main.py")
+    if src.exists():
+        shutil.copy2(src, f"/tmp/strategy_t{tier}.py")
+
+
+# ---------------------------------------------------------------------------
 # Main orchestration
 # ---------------------------------------------------------------------------
 
@@ -1012,6 +1063,7 @@ def build(spec_file_str: str) -> bool:
     tier_models = [_TIER1_MODEL, _TIER2_MODEL, _TIER3_MODEL, _TIER4_MODEL]
     total_iterations = 0
     last_model = _TIER1_MODEL
+    tiers_attempted: list[int] = []
 
     for tier_num, runner in enumerate(tier_runners, start=1):
         current_model = tier_models[tier_num - 1]
@@ -1020,6 +1072,10 @@ def build(spec_file_str: str) -> bool:
         tier_result = runner(spec_file, spec_name)
         total_iterations += tier_result.iterations_used
         last_model = tier_result.model
+        tiers_attempted.append(tier_num)
+        # Snapshot current strategy state for this tier so the artifact step
+        # can create one run folder per tier attempted.
+        _snapshot_strategy_for_tier(spec_name, tier_num)
 
         if tier_result.success:
             print(
@@ -1034,6 +1090,7 @@ def build(spec_file_str: str) -> bool:
                 total_iterations,
                 True,
             )
+            _write_build_result(spec_name, tiers_attempted, tier_num, True)
             return True
 
         print(
@@ -1064,6 +1121,15 @@ def build(spec_file_str: str) -> bool:
             "All 4 model tiers were exhausted. No real strategy was produced.\n"
             "The build has FAILED. Manual intervention is required."
         ),
+    )
+    _write_build_result(
+        spec_name,
+        tiers_attempted,
+        # final_tier is the last tier that ran; if no tiers ran (impossible in
+        # normal flow since tier_runners always has 4 elements), fall back to
+        # the total number of tiers as a safe sentinel.
+        tiers_attempted[-1] if tiers_attempted else len(tier_runners),
+        False,
     )
     return False
 
