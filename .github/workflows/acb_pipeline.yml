@@ -732,11 +732,17 @@ jobs:
           PYEOF
           )"
 
-          git clone --depth=1 \
+          if ! git clone --depth=1 \
             "https://x-access-token:${INFINITY_PUBLIC_TO_PRIVATE_ACCESS}@github.com/${PRIVATE_REPO}.git" \
-            /tmp/infinity-lab-private-runs
+            /tmp/infinity-lab-private-runs; then
+            echo "::warning::Failed to clone ${PRIVATE_REPO} — artifacts not persisted."
+            exit 0
+          fi
 
-          cd /tmp/infinity-lab-private-runs
+          if ! cd /tmp/infinity-lab-private-runs; then
+            echo "::warning::Cloned repository directory /tmp/infinity-lab-private-runs not found — artifacts not persisted."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
