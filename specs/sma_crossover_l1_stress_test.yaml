@@ -17,7 +17,7 @@ data:
     - SPY
   resolution: daily
   start_date: "2021-01-01"
-  end_date: "2021-12-31"
+  end_date: "2023-12-31"
 
 signals:
   entry:
@@ -37,14 +37,16 @@ acceptance_criteria:
   min_sharpe_ratio: 0.40
   min_profit_factor: 1.1
   min_trades: 1
+  min_cagr: 0.05
 
 assumptions:
   fees: 0.001
   slippage: 0.0005
+  risk_per_trade_pct: 1.0
 
 notes: |
   L1 stress test — Aider must generate from spec alone.
   Reference: strategies/reference/sma_crossover_simple.py
-  Target: Sharpe >= 0.40, Drawdown <= 20%, period 2021.
+  Target: Sharpe >= 0.40, Drawdown <= 20%, period 2021-2023.
   Do NOT provide the reference file to Aider.
   Tracked in: UNI-92
