@@ -1,7 +1,7 @@
 metadata:
   name: "SMA Crossover L1 Stress Test"
   trading_style: position
-  version: "1.0.0"
+  version: "1.0.1"
   author: "Infinity Lab"
   description: >-
     Simple dual-SMA crossover on SPY using a 10-day and 50-day SMA.
