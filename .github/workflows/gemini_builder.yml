@@ -1,0 +1,125 @@
+name: Gemini Strategy Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      spec_path:
+        description: 'Path to the strategy spec YAML (e.g. specs/vwap_probe.yaml)'
+        required: true
+        type: string
+      max_iterations:
+        description: 'Maximum build iterations (default: 5)'
+        required: false
+        default: '5'
+        type: string
+
+  push:
+    branches:
+      - '**'
+    paths:
+      - 'specs/*.yaml'
+
+jobs:
+  build-strategy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install google-generativeai pydantic pyyaml requests
+
+      - name: Resolve spec path
+        id: resolve-spec
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SPEC_PATH="${{ inputs.spec_path }}"
+          else
+            # Push event: detect which spec file changed.
+            # When multiple spec files are modified, the first changed file is used.
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.sha }}"
+
+            # Fall back to HEAD~1 if before SHA is missing or all-zeros (e.g. new branch push)
+            if [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]]; then
+              BASE=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+            else
+              BASE="$BEFORE"
+            fi
+
+            if [ -z "$BASE" ]; then
+              # Initial commit on branch — diff against empty tree
+              BASE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+            fi
+
+            SPEC_PATH=$(git diff --name-only "$BASE" "$AFTER" 2>/dev/null \
+              | grep '^specs/.*\.yaml$' \
+              | head -1 || echo "")
+
+            if [ -z "$SPEC_PATH" ]; then
+              echo "No specs/*.yaml file changed in this push — skipping build."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "Resolved spec path: $SPEC_PATH"
+          echo "spec_path=$SPEC_PATH" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Build strategy with Gemini
+        if: steps.resolve-spec.outputs.skip != 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_TOKEN }}
+        run: |
+          MAX_ITER="${{ inputs.max_iterations }}"
+          MAX_ITER="${MAX_ITER:-5}"
+          python scripts/gemini_builder.py \
+            --spec "${{ steps.resolve-spec.outputs.spec_path }}" \
+            --max-iterations "$MAX_ITER"
+
+      - name: Commit generated strategy
+        if: steps.resolve-spec.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+
+          # Check if any strategy file was generated
+          if git diff --quiet && git diff --staged --quiet; then
+            # Also check for untracked strategy files
+            UNTRACKED=$(git ls-files --others --exclude-standard strategies/ || echo "")
+            if [ -z "$UNTRACKED" ]; then
+              echo "No new strategy files to commit."
+              exit 0
+            fi
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          SPEC="${{ steps.resolve-spec.outputs.spec_path }}"
+          SPEC_NAME=$(basename "$SPEC" .yaml)
+
+          git add strategies/
+          if git diff --staged --quiet; then
+            echo "No staged strategy changes to commit."
+            exit 0
+          fi
+
+          git commit -m "feat(gemini-builder): generated strategy for ${SPEC_NAME} [skip ci]"
+          git push origin HEAD
