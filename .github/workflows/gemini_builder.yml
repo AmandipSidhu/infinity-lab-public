@@ -49,12 +49,9 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             SPEC_PATH="${{ inputs.spec_path }}"
           else
-            # Push event: detect which spec file changed.
-            # When multiple spec files are modified, the first changed file is used.
             BEFORE="${{ github.event.before }}"
             AFTER="${{ github.sha }}"
 
-            # Fall back to HEAD~1 if before SHA is missing or all-zeros (e.g. new branch push)
             if [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]]; then
               BASE=$(git rev-parse HEAD~1 2>/dev/null || echo "")
             else
@@ -62,7 +59,6 @@ jobs:
             fi
 
             if [ -z "$BASE" ]; then
-              # Git's canonical empty-tree object — safe diff base when there is no parent commit
               BASE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
             fi
 
@@ -86,7 +82,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
-          QC_API_TOKEN: ${{ secrets.QC_TOKEN }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
         run: |
           MAX_ITER="${{ inputs.max_iterations }}"
           MAX_ITER="${MAX_ITER:-5}"
@@ -99,9 +95,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Check if any strategy file was generated
           if git diff --quiet && git diff --staged --quiet; then
-            # Also check for untracked strategy files
             UNTRACKED=$(git ls-files --others --exclude-standard strategies/ || echo "")
             if [ -z "$UNTRACKED" ]; then
               echo "No new strategy files to commit."

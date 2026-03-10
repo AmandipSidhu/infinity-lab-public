@@ -229,12 +229,13 @@ def run_qc_upload_eval(
     """Upload strategy to QC, run LEAN compile + backtest, evaluate fitness.
 
     Writes *code* to a temporary file, calls :func:`upload_and_evaluate` from
-    ``qc_upload_eval``, and runs :func:`check_backtest_constraints` on the
-    result.
+    ``qc_upload_eval``, then inspects the returned summary (specifically the
+    ``violations`` list and the ``passed`` flag) to determine whether all
+    backtest constraints are satisfied.
 
     Args:
         spec_path: Path to the spec YAML file (required by upload_and_evaluate).
-        spec_name: Human-readable spec name (used only for logging).
+        spec_name: Human-readable spec name (used for logging).
         code:      Python source code to evaluate.
 
     Returns:
@@ -250,16 +251,16 @@ def run_qc_upload_eval(
         ) as fh:
             fh.write(code)
             tmp_strategy_path = fh.name
+        print(f"[gemini_builder] QC eval: uploading strategy for spec '{spec_name}'")
         summary = upload_and_evaluate(Path(spec_path), Path(tmp_strategy_path))
     except MCPConnectionError as exc:
         return False, (
             f"QC REST API unreachable — cannot complete backtest: {exc}\n"
-            "Ensure QC_USER_ID and QC_TOKEN (mapped to QC_API_TOKEN) are set "
-            "and the QC REST API is reachable."
+            "Ensure QC_USER_ID and QC_API_TOKEN are set and the QC REST API is reachable."
         )
     except RuntimeError as exc:
         # Covers LEAN compile errors, project creation failures, poll timeouts, etc.
-        return False, f"LEAN compile or QC API error:\n{exc}"
+        return False, f"LEAN compile or QC API error for spec '{spec_name}':\n{exc}"
     finally:
         if tmp_strategy_path:
             Path(tmp_strategy_path).unlink(missing_ok=True)

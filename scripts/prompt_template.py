@@ -8,6 +8,7 @@ No specific indicator names are hard-coded here — all signal details
 come directly from the spec.
 """
 
+import sys
 from typing import Any
 
 
@@ -47,6 +48,12 @@ def _extract_resolution(spec: dict[str, Any]) -> str:
     res = _get_nested(spec, "strategy", "universe", "resolution")
     if res:
         return str(res)
+    print(
+        "[prompt_template] WARNING: no resolution found in spec — "
+        "falling back to 'daily'. This is almost certainly wrong for "
+        "intraday strategies (e.g. VWAP). Set data.resolution in your spec.",
+        file=sys.stderr,
+    )
     return "daily"
 
 
@@ -159,15 +166,18 @@ def build_strategy_prompt(spec: dict[str, Any], feedback: str | None = None) -> 
     spec_name = (spec.get("metadata") or {}).get("name", "unnamed_strategy")
     description = (spec.get("metadata") or {}).get("description", "").strip()
 
-    # Format dates for SetStartDate / SetEndDate calls
+    # Format dates for SetStartDate / SetEndDate calls — fail fast on bad format
     try:
         _s = str(start_date).split("-")
         _e = str(end_date).split("-")
         start_call = f"self.SetStartDate({int(_s[0])}, {int(_s[1])}, {int(_s[2])})"
         end_call = f"self.SetEndDate({int(_e[0])}, {int(_e[1])}, {int(_e[2])})"
-    except (IndexError, ValueError):
-        start_call = f'self.SetStartDate(*"{start_date}".split("-"))'
-        end_call = f'self.SetEndDate(*"{end_date}".split("-"))'
+    except (IndexError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid start_date/end_date format in spec: "
+            f"start_date={start_date!r}, end_date={end_date!r}. "
+            "Expected 'YYYY-MM-DD'."
+        ) from exc
 
     resolution_map = {
         "tick": "Resolution.Tick",
@@ -233,17 +243,11 @@ Initial capital: ${capital:,.0f}
 - Handle the IsWarmingUp guard: return early if self.IsWarmingUp
 - Add self.SetWarmUp(period) appropriate for the indicators used
 - Do NOT use any indicator, instrument, or date that is not listed above
+- Your response must start the code block with `from AlgorithmImports import *`
 
 {feedback_section}
 
-Return ONLY a Python code block. No explanation. No markdown except the code fence.
-
-```python
-from AlgorithmImports import *
-
-class {_class_name(spec_name)}(QCAlgorithm):
-    # Your complete implementation here
-```"""
+Return ONLY a Python code block. No explanation. No markdown except the code fence."""
 
     return prompt
 
