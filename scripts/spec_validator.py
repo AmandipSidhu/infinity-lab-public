@@ -866,7 +866,10 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help="Path to the YAML spec file (alternative to --spec).",
     )
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code) if exc.code is not None else 2
 
     spec_path = args.spec or args.positional
     if not spec_path:

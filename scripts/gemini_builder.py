@@ -202,19 +202,20 @@ def syntax_check(code: str) -> tuple[bool, str]:
         (False, error_msg)  — Syntax is invalid; error_msg contains the
                               exact py_compile error string.
     """
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, encoding="utf-8"
-    ) as fh:
-        fh.write(code)
-        tmp_path = fh.name
-
+    tmp_path: str = ""
     try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as fh:
+            fh.write(code)
+            tmp_path = fh.name
         py_compile.compile(tmp_path, doraise=True)
         return True, ""
     except py_compile.PyCompileError as exc:
         return False, str(exc)
     finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -241,14 +242,14 @@ def run_qc_upload_eval(
         (False, error_msg)  — Failure at any stage; error_msg is verbatim for
                               feeding back into the next Gemini iteration.
     """
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, encoding="utf-8"
-    ) as fh:
-        fh.write(code)
-        tmp_strategy_path = fh.name
-
+    tmp_strategy_path: str = ""
     summary: dict[str, Any] = {}
     try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as fh:
+            fh.write(code)
+            tmp_strategy_path = fh.name
         summary = upload_and_evaluate(Path(spec_path), Path(tmp_strategy_path))
     except MCPConnectionError as exc:
         return False, (
@@ -260,7 +261,8 @@ def run_qc_upload_eval(
         # Covers LEAN compile errors, project creation failures, poll timeouts, etc.
         return False, f"LEAN compile or QC API error:\n{exc}"
     finally:
-        Path(tmp_strategy_path).unlink(missing_ok=True)
+        if tmp_strategy_path:
+            Path(tmp_strategy_path).unlink(missing_ok=True)
 
     # Check fitness constraints from the summary violations list
     violations: list[dict[str, Any]] = summary.get("violations", [])

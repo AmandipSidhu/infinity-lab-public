@@ -62,7 +62,7 @@ jobs:
             fi
 
             if [ -z "$BASE" ]; then
-              # Initial commit on branch — diff against empty tree
+              # Git's canonical empty-tree object — safe diff base when there is no parent commit
               BASE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
             fi
 
