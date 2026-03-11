@@ -1,9 +1,8 @@
 name: ACB Pipeline
 
 on:
-  push:
-    paths:
-      - "specs/**"
+  # Auto-trigger on specs/** DISABLED — gemini_builder.yml is the active pipeline.
+  # Keep workflow_dispatch for manual runs only.
   workflow_dispatch:
     inputs:
       spec_file:
@@ -506,7 +505,6 @@ jobs:
           spec_file = "${{ matrix.spec_file }}"
           run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-          # Build Slack Block Kit message summarizing the full pipeline run
           message = {
               "channel": os.environ["SLACK_ACK_CHANNEL_ID"],
               "text": f"{status_emoji} ACB Pipeline: {status_text}",
@@ -554,7 +552,6 @@ jobs:
           )
 
           if not response.ok or not response.json().get("ok"):
-              # Notification failure should not block the pipeline
               print(f"Slack notification failed: {response.text}")
           PYEOF
 
@@ -651,7 +648,6 @@ jobs:
           report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
           print(f"E2E report written to: {report_path}")
 
-          # Write step outputs for use by the downstream push step
           github_output = os.environ.get("GITHUB_OUTPUT")
           if not github_output:
               raise RuntimeError("GITHUB_OUTPUT environment variable is not set — cannot publish step outputs")
@@ -660,8 +656,6 @@ jobs:
               _f.write(f"report_path={report_path}\n")
           PYEOF
 
-      # Step 12 (ARCHITECTURE v4.5 §6): push E2E report to infinity-lab-private.
-      # Secret: INFINITY_PUBLIC_TO_PRIVATE_ACCESS — PAT with write access to AmandipSidhu/infinity-lab-private.
       - name: Push E2E Report to infinity-lab-private
         if: always()
         env:
@@ -722,9 +716,6 @@ jobs:
 
           DATE=$(date -u +%Y-%m-%d)
 
-          # Parse all needed fields from the JSON and export them safely to a
-          # temp env file, then source it. Using a temp file (rather than eval)
-          # avoids shell-injection risks from unexpected JSON values.
           python - <<'PYEOF'
           import json
           import os
@@ -762,7 +753,6 @@ jobs:
             echo "::warning::Failed to produce build env file — artifacts not persisted."
             exit 0
           fi
-          # shellcheck source=/dev/null
           . /tmp/_acb_build_env.sh
 
           if ! git clone --depth=1 \
@@ -784,7 +774,6 @@ jobs:
             RUN_DIR="runs/${DATE}_${SPEC_NAME}_l${LEVEL}_t${TIER}"
             mkdir -p "${RUN_DIR}"
 
-            # main.py — per-tier strategy snapshot written by aider_builder.py
             STRATEGY_SNAPSHOT="/tmp/strategy_t${TIER}.py"
             if [ -f "${STRATEGY_SNAPSHOT}" ]; then
               cp "${STRATEGY_SNAPSHOT}" "${RUN_DIR}/main.py"
@@ -792,17 +781,14 @@ jobs:
               cp "${GITHUB_WORKSPACE}/strategies/${SPEC_NAME}/main.py" "${RUN_DIR}/main.py"
             fi
 
-            # backtest_result.json — from lean/QC backtest step
             if [ -f "/tmp/backtest_result.json" ]; then
               cp "/tmp/backtest_result.json" "${RUN_DIR}/backtest_result.json"
             fi
 
-            # aider_prompt.txt — written by aider_builder.py before each Aider invocation
             if [ -f "/tmp/aider_prompt.txt" ]; then
               cp "/tmp/aider_prompt.txt" "${RUN_DIR}/aider_prompt.txt"
             fi
 
-            # spec_snapshot.yaml — copy of the spec file as it was at run time
             if [ -f "${GITHUB_WORKSPACE}/${SPEC_FILE}" ]; then
               cp "${GITHUB_WORKSPACE}/${SPEC_FILE}" "${RUN_DIR}/spec_snapshot.yaml"
             fi
