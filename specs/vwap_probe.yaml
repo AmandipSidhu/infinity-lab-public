@@ -64,4 +64,4 @@ notes: |
     4. pre_commit_gates passes or surfaces clear fixable errors
     5. qc_upload_eval runs (stub or real) without crash
   If all 5 pass -> proceed to full vwap-mean-reversion-mes-tqqq.yaml.
-  # retriggered: 2026-03-10T22:09 UTC - DAC first run (gemini_builder)
+  # retriggered: 2026-03-11T05:26 UTC - after google-genai SDK + model name fix
