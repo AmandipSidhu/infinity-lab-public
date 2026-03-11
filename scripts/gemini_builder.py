@@ -20,7 +20,7 @@ Critical invariants:
     - NEVER report success if the file was not actually written and validated
     - NEVER write a file that failed syntax check or LEAN compile
     - Each iteration prompt includes the previous error verbatim
-    - After 3 Flash failures → switch to gemini-2.5-pro-preview-03-25 for remaining attempts
+    - After 3 Flash failures → switch to gemini-2.5-pro for remaining attempts
     - After 5 total iterations without pass → write FAILED status, no stub
 """
 
@@ -54,8 +54,8 @@ from spec_validator import validate_spec  # noqa: E402
 # ---------------------------------------------------------------------------
 
 _GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "").strip()
-_DEFAULT_MODEL: str = "gemini-2.5-flash-preview-04-17"
-_FALLBACK_MODEL: str = "gemini-2.5-pro-preview-03-25"
+_DEFAULT_MODEL: str = "gemini-2.5-flash"   # stable alias — verified 2026-03-10
+_FALLBACK_MODEL: str = "gemini-2.5-pro"    # stable alias — verified 2026-03-10
 # After this many Flash failures, switch to Pro for remaining attempts
 _FLASH_SWITCH_AFTER: int = 3
 
@@ -128,7 +128,7 @@ def call_gemini(prompt: str, model: str = _DEFAULT_MODEL) -> str:
 
     Args:
         prompt: The prompt string to send.
-        model:  The Gemini model identifier (default: gemini-2.5-flash-preview-04-17).
+        model:  The Gemini model identifier (default: gemini-2.5-flash).
 
     Returns:
         Raw text response from Gemini.
@@ -365,7 +365,7 @@ def build_strategy(spec_path: str, max_iterations: int = 5) -> bool:
       6. QC upload + LEAN compile + backtest — on fail, feed error back, increment
       7. Fitness constraint check — on fail, feed violations back, increment
       8. All gates pass → write strategies/{spec_name}/main.py, return True
-      9. After _FLASH_SWITCH_AFTER Flash failures → switch to gemini-2.5-pro-preview-03-25
+      9. After _FLASH_SWITCH_AFTER Flash failures → switch to gemini-2.5-pro
      10. After max_iterations without pass → log FAILED, return False (no stub written)
 
     Args:
