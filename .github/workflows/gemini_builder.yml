@@ -39,7 +39,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install google-generativeai pydantic pyyaml requests
+          pip install -r requirements.txt
 
       - name: Resolve spec path
         id: resolve-spec
