@@ -20,7 +20,7 @@ Critical invariants:
     - NEVER report success if the file was not actually written and validated
     - NEVER write a file that failed syntax check or LEAN compile
     - Each iteration prompt includes the previous error verbatim
-    - After 3 Flash failures → switch to gemini-2.0-pro-exp for one attempt
+    - After 3 Flash failures → switch to gemini-2.5-pro-preview-03-25 for remaining attempts
     - After 5 total iterations without pass → write FAILED status, no stub
 """
 
@@ -54,9 +54,9 @@ from spec_validator import validate_spec  # noqa: E402
 # ---------------------------------------------------------------------------
 
 _GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "").strip()
-_DEFAULT_MODEL: str = "gemini-2.0-flash"
-_FALLBACK_MODEL: str = "gemini-2.0-pro-exp"
-# After this many Flash failures, switch to Pro for one attempt
+_DEFAULT_MODEL: str = "gemini-2.5-flash-preview-04-17"
+_FALLBACK_MODEL: str = "gemini-2.5-pro-preview-03-25"
+# After this many Flash failures, switch to Pro for remaining attempts
 _FLASH_SWITCH_AFTER: int = 3
 
 
@@ -123,9 +123,12 @@ def build_prompt(spec: dict[str, Any], feedback: str | None = None) -> str:
 def call_gemini(prompt: str, model: str = _DEFAULT_MODEL) -> str:
     """Call the Gemini API and return the raw text response.
 
+    Uses the google-genai SDK (google.genai), which replaces the deprecated
+    google-generativeai (google.generativeai) package.
+
     Args:
         prompt: The prompt string to send.
-        model:  The Gemini model identifier (default: gemini-2.0-flash).
+        model:  The Gemini model identifier (default: gemini-2.5-flash-preview-04-17).
 
     Returns:
         Raw text response from Gemini.
@@ -139,18 +142,20 @@ def call_gemini(prompt: str, model: str = _DEFAULT_MODEL) -> str:
         )
 
     try:
-        import google.generativeai as genai  # type: ignore[import]
+        from google import genai  # type: ignore[import]
     except ImportError as exc:
         raise RuntimeError(
-            "google-generativeai package is not installed; "
-            "run: pip install google-generativeai"
+            "google-genai package is not installed; "
+            "run: pip install google-genai"
         ) from exc
 
-    genai.configure(api_key=_GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel(model)
+    client = genai.Client(api_key=_GEMINI_API_KEY)
 
     try:
-        response = gemini_model.generate_content(prompt)
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+        )
     except Exception as exc:
         raise RuntimeError(f"Gemini API call failed (model={model}): {exc}") from exc
 
@@ -336,7 +341,7 @@ def check_backtest_constraints(
 
 
 # ---------------------------------------------------------------------------
-# Step 8–10 — main build loop
+# Step 8-10 — main build loop
 # ---------------------------------------------------------------------------
 
 
@@ -360,7 +365,7 @@ def build_strategy(spec_path: str, max_iterations: int = 5) -> bool:
       6. QC upload + LEAN compile + backtest — on fail, feed error back, increment
       7. Fitness constraint check — on fail, feed violations back, increment
       8. All gates pass → write strategies/{spec_name}/main.py, return True
-      9. After _FLASH_SWITCH_AFTER Flash failures → switch to gemini-2.0-pro-exp
+      9. After _FLASH_SWITCH_AFTER Flash failures → switch to gemini-2.5-pro-preview-03-25
      10. After max_iterations without pass → log FAILED, return False (no stub written)
 
     Args:
