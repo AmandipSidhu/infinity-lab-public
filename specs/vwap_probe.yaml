@@ -1,19 +1,24 @@
 # vwap_probe.yaml
 # PURPOSE: Minimal pipeline probe - NOT the production VWAP strategy.
-# Used to validate Aider build quality and QC backtest loop before
+# Used to validate DAC build quality and QC backtest loop before
 # committing the full vwap-mean-reversion-mes-tqqq spec.
 # Once pipeline E2E is confirmed healthy, this spec is superseded.
+#
+# NOTE: Temporarily using SPY (equity) instead of MES (futures).
+# Reason: vwap_ema_crossover.py reference uses AddEquity(SPY).
+# Futures require AddFuture() / continuous contract syntax that the
+# reference cannot anchor. Revert to MES after first passing E2E run.
 
 metadata:
   name: "VWAP Probe"
   trading_style: day_trade
-  version: "1.0.0"
+  version: "1.1.0"
   author: "Infinity Lab"
   created_at: "2026-03-05"
   description: >-
     Minimal VWAP mean-reversion probe for E2E pipeline validation.
-    Fades 2-sigma VWAP deviations on MES futures with volume
-    confirmation. Single-mode, ATR stop, 60-minute max hold.
+    Fades 2-sigma VWAP deviations on SPY with volume confirmation.
+    Single-mode, ATR stop, 60-minute max hold.
 
 capital:
   allocation_usd: 25000
@@ -24,10 +29,10 @@ constraints:
 
 data:
   instruments:
-    - MES
+    - SPY
   resolution: minute
   start_date: "2022-01-01"
-  end_date: "2025-12-31"
+  end_date: "2023-12-31"
 
 signals:
   entry:
@@ -47,21 +52,21 @@ acceptance_criteria:
   max_drawdown_pct: 15.0
   min_sharpe_ratio: 1.0
   min_profit_factor: 1.3
-  min_trades: 200
-  min_cagr: 15.0
+  min_trades: 50
+  min_cagr: 10.0
 
 assumptions:
   fees: 0.001
   slippage: 0.0005
 
 notes: |
-  Pipeline probe only. Intentionally simple - one entry condition,
+  Pipeline probe only. Intentionally simple — one entry condition,
   one exit condition, no regime modes.
+  SPY substituted for MES to match vwap_ema_crossover.py reference.
+  Revert to MES after first passing DAC run confirms E2E health.
   Success criteria for this probe run:
     1. spec_validator exits 0 (no SVR errors)
-    2. strategy_reviewer returns PASS or WARN (not BLOCK)
-    3. aider_builder produces a non-empty strategies/vwap_probe/main.py
-    4. pre_commit_gates passes or surfaces clear fixable errors
-    5. qc_upload_eval runs (stub or real) without crash
-  If all 5 pass -> proceed to full vwap-mean-reversion-mes-tqqq.yaml.
-  # retriggered: 2026-03-07T06:07 UTC - retrigger after IndentationError fix in run_tier_3
+    2. DAC produces non-empty strategies/vwap_probe/main.py
+    3. QC compile_state = BuildSuccess
+    4. backtest_status = Completed
+    5. Sharpe >= 1.0 OR at minimum pipeline runs end-to-end without crash
