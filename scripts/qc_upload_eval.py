@@ -46,6 +46,8 @@ _QC_API_TOKEN: str = os.environ.get("QC_API_TOKEN", "").strip()
 _SHARPE_RATIO_MIN: float = 0.5            # hard floor regardless of spec
 _POLL_INTERVAL_SECONDS: int = 10          # seconds between backtest polls
 _POLL_MAX_ATTEMPTS: int = 60             # max polls (~10 min timeout)
+_COMPILE_POLL_INTERVAL_SECONDS: int = 5   # seconds between compile status polls
+_COMPILE_POLL_MAX_ATTEMPTS: int = 30      # max compile polls (150s timeout)
 _REQUEST_TIMEOUT_SECONDS: int = 30
 
 
@@ -174,9 +176,44 @@ def _compile_project(project_id: int) -> str:
     return str(compile_id)
 
 
+def _wait_for_compile(project_id: int, compile_id: str) -> None:
+    """Poll compile/read until the compile job reaches BuildSuccess.
+
+    Raises ``RuntimeError`` if the compile reaches ``BuildError`` or if the
+    polling timeout is exhausted (``_COMPILE_POLL_MAX_ATTEMPTS`` × 5 s).
+    """
+    for attempt in range(1, _COMPILE_POLL_MAX_ATTEMPTS + 1):
+        body = _qc_get(
+            "compile/read",
+            params={"projectId": project_id, "compileId": compile_id},
+        )
+        compile_info: dict[str, Any] = body.get("compile", body)
+        state: str = str(compile_info.get("state", ""))
+
+        if state == "BuildSuccess":
+            return
+        if state == "BuildError":
+            error_msg = compile_info.get("error") or "unknown compile error"
+            raise RuntimeError(
+                f"Compile {compile_id} failed with BuildError: {error_msg}"
+            )
+
+        print(
+            f"[qc_upload_eval] Compile state: {state!r} "
+            f"(attempt {attempt}/{_COMPILE_POLL_MAX_ATTEMPTS})"
+        )
+        time.sleep(_COMPILE_POLL_INTERVAL_SECONDS)
+
+    raise RuntimeError(
+        f"Compile {compile_id} did not reach BuildSuccess after "
+        f"{_COMPILE_POLL_MAX_ATTEMPTS * _COMPILE_POLL_INTERVAL_SECONDS} seconds"
+    )
+
+
 def _create_backtest(project_id: int, spec_name: str) -> str:
     """Compile the project, trigger a backtest, and return the backtest_id."""
     compile_id = _compile_project(project_id)
+    _wait_for_compile(project_id, compile_id)
     body = _qc_post(
         "backtests/create",
         {"projectId": project_id, "compileId": compile_id, "backtestName": f"{spec_name}_backtest"},

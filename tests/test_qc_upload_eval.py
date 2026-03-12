@@ -28,6 +28,7 @@ from qc_upload_eval import (  # noqa: E402
     _extract_stat,
     _poll_backtest,
     _upload_strategy,
+    _wait_for_compile,
     evaluate_fitness,
     main,
     upload_and_evaluate,
@@ -328,3 +329,82 @@ class TestCLI:
         data = json.loads(out_file.read_text())
         assert data["result"] == "FAIL"
         assert "protocol error" in data["error"]
+
+
+# ---------------------------------------------------------------------------
+# _wait_for_compile
+# ---------------------------------------------------------------------------
+
+
+class TestWaitForCompile:
+    def test_returns_on_build_success(self) -> None:
+        """_wait_for_compile returns cleanly when compile/read state is BuildSuccess."""
+        response = {"success": True, "compile": {"compileId": "abc123", "state": "BuildSuccess", "error": None}}
+        with patch.object(qc_upload_eval, "_qc_get", return_value=response):
+            _wait_for_compile(42, "abc123")  # should not raise
+
+    def test_raises_on_build_error(self) -> None:
+        """_wait_for_compile raises RuntimeError with the compile error message on BuildError."""
+        response = {
+            "success": True,
+            "compile": {
+                "compileId": "abc123",
+                "state": "BuildError",
+                "error": "Compilation failed: undefined variable 'x'",
+            },
+        }
+        with patch.object(qc_upload_eval, "_qc_get", return_value=response):
+            with pytest.raises(RuntimeError, match="BuildError"):
+                _wait_for_compile(42, "abc123")
+
+    def test_raises_on_build_error_includes_error_message(self) -> None:
+        """RuntimeError on BuildError includes the compile error detail."""
+        response = {
+            "success": True,
+            "compile": {
+                "compileId": "abc123",
+                "state": "BuildError",
+                "error": "syntax error near token ':'",
+            },
+        }
+        with patch.object(qc_upload_eval, "_qc_get", return_value=response):
+            with pytest.raises(RuntimeError, match="syntax error near token ':'"):
+                _wait_for_compile(42, "abc123")
+
+    def test_raises_on_timeout(self) -> None:
+        """_wait_for_compile raises RuntimeError when max attempts exhausted."""
+        in_queue_response = {"success": True, "compile": {"compileId": "abc123", "state": "InQueue", "error": None}}
+        with patch.object(qc_upload_eval, "_qc_get", return_value=in_queue_response):
+            with patch.object(qc_upload_eval, "_COMPILE_POLL_MAX_ATTEMPTS", 2):
+                with patch.object(qc_upload_eval, "time") as mock_time:
+                    mock_time.time.return_value = 0
+                    mock_time.sleep = MagicMock()
+                    with pytest.raises(RuntimeError, match="did not reach BuildSuccess"):
+                        _wait_for_compile(42, "abc123")
+
+    def test_polls_until_success(self) -> None:
+        """_wait_for_compile retries when state is InQueue/Building before BuildSuccess."""
+        responses = [
+            {"success": True, "compile": {"compileId": "abc123", "state": "InQueue", "error": None}},
+            {"success": True, "compile": {"compileId": "abc123", "state": "Building", "error": None}},
+            {"success": True, "compile": {"compileId": "abc123", "state": "BuildSuccess", "error": None}},
+        ]
+        with patch.object(qc_upload_eval, "_qc_get", side_effect=responses):
+            with patch.object(qc_upload_eval, "time") as mock_time:
+                mock_time.sleep = MagicMock()
+                _wait_for_compile(42, "abc123")  # should not raise
+                assert mock_time.sleep.call_count == 2  # slept twice before success
+
+    def test_create_backtest_calls_wait_for_compile(self) -> None:
+        """_create_backtest calls _wait_for_compile before backtests/create."""
+        with patch.object(qc_upload_eval, "_compile_project", return_value="compile-xyz"):
+            with patch.object(qc_upload_eval, "_wait_for_compile") as mock_wait:
+                with patch.object(
+                    qc_upload_eval,
+                    "_qc_post",
+                    return_value={"backtest": {"backtestId": "bt-abc"}, "success": True},
+                ):
+                    backtest_id = _create_backtest(99, "my_spec")
+
+        mock_wait.assert_called_once_with(99, "compile-xyz")
+        assert backtest_id == "bt-abc"
