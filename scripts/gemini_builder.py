@@ -13,6 +13,7 @@ Functions (in order):
     extract_code           — parse ```python ... ``` from response
     syntax_check           — py_compile validation
     run_qc_upload_eval     — QC REST upload → LEAN compile → backtest → eval
+    build_fitness_feedback — build enriched retry feedback from backtest metrics
     check_backtest_constraints — evaluate fitness constraints against spec
     build_strategy         — main orchestration loop
 
@@ -230,7 +231,7 @@ def syntax_check(code: str) -> tuple[bool, str]:
 
 def run_qc_upload_eval(
     spec_path: str, spec_name: str, code: str
-) -> tuple[bool, str]:
+) -> tuple[bool, str, dict[str, Any]]:
     """Upload strategy to QC, run LEAN compile + backtest, evaluate fitness.
 
     Writes *code* to a temporary file, calls :func:`upload_and_evaluate` from
@@ -244,9 +245,11 @@ def run_qc_upload_eval(
         code:      Python source code to evaluate.
 
     Returns:
-        (True, "")          — LEAN compiled, backtest ran, all constraints pass.
-        (False, error_msg)  — Failure at any stage; error_msg is verbatim for
-                              feeding back into the next Gemini iteration.
+        (True, "", {})       — LEAN compiled, backtest ran, all constraints pass.
+        (False, error_msg, backtest_stats) — Failure at any stage; error_msg is
+                              verbatim for feeding back into the next Gemini
+                              iteration; backtest_stats is the raw metrics dict
+                              (may be empty on compile/API failures).
     """
     tmp_strategy_path: str = ""
     summary: dict[str, Any] = {}
@@ -262,19 +265,21 @@ def run_qc_upload_eval(
         return False, (
             f"QC REST API unreachable — cannot complete backtest: {exc}\n"
             "Ensure QC_USER_ID and QC_API_TOKEN are set and the QC REST API is reachable."
-        )
+        ), {}
     except RuntimeError as exc:
         # Covers LEAN compile errors, project creation failures, poll timeouts, etc.
-        return False, f"LEAN compile or QC API error for spec '{spec_name}':\n{exc}"
+        return False, f"LEAN compile or QC API error for spec '{spec_name}':\n{exc}", {}
     finally:
         if tmp_strategy_path:
             Path(tmp_strategy_path).unlink(missing_ok=True)
+
+    backtest_stats: dict[str, Any] = summary.get("backtest_stats", {})
 
     # Check fitness constraints from the summary violations list
     violations: list[dict[str, Any]] = summary.get("violations", [])
     if violations:
         msg_lines = [f"  {v['constraint']}: {v['message']}" for v in violations]
-        return False, "Backtest constraint violations:\n" + "\n".join(msg_lines)
+        return False, "Backtest constraint violations:\n" + "\n".join(msg_lines), backtest_stats
 
     if not summary.get("passed", False):
         return False, (
@@ -282,10 +287,169 @@ def run_qc_upload_eval(
             f"Result: {summary.get('result')}. "
             f"This may indicate a QC API evaluation framework error or missing "
             f"backtest statistics. "
-            f"Stats: {summary.get('backtest_stats', {})}"
+            f"Stats: {backtest_stats}"
+        ), backtest_stats
+
+    return True, "", backtest_stats
+
+
+def build_fitness_feedback(
+    violations_msg: str,
+    backtest_stats: dict[str, Any],
+    spec: dict[str, Any],
+) -> str:
+    """Build an enriched feedback string from backtest metrics for the retry prompt.
+
+    Combines the raw violation message with a structured block showing the full
+    backtest metrics and dynamically generated "What went wrong / What to fix"
+    sections so that Gemini has actionable signal on each retry.
+
+    Args:
+        violations_msg:  The raw violation message string from :func:`run_qc_upload_eval`.
+        backtest_stats:  The ``backtest_stats`` dict returned from
+                         ``upload_and_evaluate`` (may be empty).
+        spec:            Parsed spec dict (used to read constraint thresholds).
+
+    Returns:
+        An enriched feedback string ready to pass to :func:`build_prompt`.
+    """
+
+    def _get_stat(keys: list[str]) -> float | None:
+        """Return the first matching numeric value from backtest_stats."""
+        for key in keys:
+            val = backtest_stats.get(key)
+            if val is not None:
+                try:
+                    # QC may return stats as strings like "0.38" or "12.5%"
+                    return float(str(val).rstrip("%").replace(",", ""))
+                except (ValueError, TypeError):
+                    continue
+        return None
+
+    sharpe = _get_stat(["SharpeRatio", "sharpe_ratio", "Sharpe Ratio", "sharpe"])
+    total_trades = _get_stat(["TotalTrades", "total_trades", "Total Trades", "Trades Made"])
+    win_rate = _get_stat(["WinRate", "win_rate", "Win Rate"])
+    net_profit = _get_stat(["NetProfit", "net_profit", "Net Profit"])
+    annual_return = _get_stat(["AnnualReturn", "annual_return", "Annual Return", "Compounding Annual Return"])
+    drawdown = _get_stat(["Drawdown", "MaxDrawdown", "max_drawdown", "Max Drawdown"])
+    pl_ratio = _get_stat(["ProfitLossRatio", "profit_loss_ratio", "Profit-Loss Ratio"])
+    loss_rate = _get_stat(["LossRate", "loss_rate", "Loss Rate"])
+
+    # Extract required thresholds from spec for context in the feedback
+    ac = spec.get("acceptance_criteria") or {}
+    nested_targets = (spec.get("strategy") or {}).get("performance_targets") or {}
+    required_sharpe = (
+        float(ac.get("min_sharpe_ratio", 0.5))
+        if "min_sharpe_ratio" in ac
+        else float(nested_targets.get("sharpe_ratio_min", 0.5))
+    )
+    max_dd_spec = (
+        float(ac.get("max_drawdown_pct", 100)) / 100.0
+        if "max_drawdown_pct" in ac
+        else float(nested_targets.get("max_drawdown_threshold", 1.0))
+    )
+
+    # Build metric lines — omit any that are unavailable
+    metric_lines: list[str] = []
+    if sharpe is not None:
+        metric_lines.append(f"  Sharpe Ratio:    {sharpe:.2f}  (required: >= {required_sharpe:.2f})")
+    if total_trades is not None:
+        metric_lines.append(f"  Total Trades:    {int(total_trades)}")
+    if win_rate is not None:
+        # Win rate may come as 0-1 fraction or 0-100 percentage
+        wr_display = win_rate if win_rate > 1.0 else win_rate * 100.0
+        metric_lines.append(f"  Win Rate:        {wr_display:.1f}%")
+    if net_profit is not None:
+        metric_lines.append(f"  Net Profit:      {net_profit:+.1f}%")
+    if annual_return is not None:
+        ar_display = annual_return if annual_return > 1.0 else annual_return * 100.0
+        metric_lines.append(f"  Annual Return:   {ar_display:.1f}%")
+    if drawdown is not None:
+        dd_display = drawdown if drawdown > 1.0 else drawdown * 100.0
+        metric_lines.append(f"  Max Drawdown:    {dd_display:.1f}%")
+    if pl_ratio is not None:
+        metric_lines.append(f"  Profit/Loss:     {pl_ratio:.2f}")
+    if loss_rate is not None:
+        lr_display = loss_rate if loss_rate > 1.0 else loss_rate * 100.0
+        metric_lines.append(f"  Loss Rate:       {lr_display:.1f}%")
+
+    metrics_block = (
+        "\n".join(metric_lines) if metric_lines else "  (no backtest metrics available)"
+    )
+
+    # Dynamic "What went wrong" diagnosis
+    wrong_lines: list[str] = []
+    fix_lines: list[str] = []
+
+    trades_int = int(total_trades) if total_trades is not None else None
+    wr_frac = (
+        (win_rate / 100.0 if win_rate > 1.0 else win_rate)
+        if win_rate is not None
+        else None
+    )
+    dd_frac = (
+        (drawdown / 100.0 if drawdown > 1.0 else drawdown)
+        if drawdown is not None
+        else None
+    )
+
+    # Threshold: 50 trades minimum for statistical significance; below this the
+    # strategy likely has entry conditions that are too restrictive.
+    if trades_int is not None and trades_int < 50:
+        wrong_lines.append(
+            f"- Only {trades_int} trades over the backtest period. Strategy is not trading enough."
+        )
+        fix_lines.append(
+            "- Loosen entry conditions to generate more trades (target 100+ over backtest period)"
         )
 
-    return True, ""
+    # Thresholds: win_rate < 45% AND P/L < 1.2 together indicate that losses
+    # outweigh wins in expected value (breakeven requires wr/(1-wr) >= 1/pl_ratio).
+    if wr_frac is not None and pl_ratio is not None and wr_frac < 0.45 and pl_ratio < 1.2:
+        wrong_lines.append(
+            f"- Win rate {wr_frac*100:.1f}% with P/L ratio {pl_ratio:.2f} — losses outweigh wins."
+        )
+        fix_lines.append(
+            "- Tighten stop loss relative to profit target (P/L ratio should be >= 1.5)"
+        )
+
+    if dd_frac is not None and dd_frac > max_dd_spec:
+        wrong_lines.append(
+            f"- Max drawdown {dd_frac*100:.1f}% exceeds allowed threshold {max_dd_spec*100:.1f}%."
+        )
+        fix_lines.append(
+            "- Reduce position size or add a drawdown circuit breaker"
+        )
+
+    if (
+        sharpe is not None
+        and sharpe < required_sharpe
+        and (trades_int is None or trades_int >= 50)
+    ):
+        wrong_lines.append(
+            f"- Sharpe {sharpe:.2f} below required {required_sharpe:.2f} despite adequate trade count."
+        )
+        fix_lines.append(
+            "- Improve signal quality: consider adding a confirmation filter or tightening entry criteria"
+        )
+
+    if not wrong_lines:
+        wrong_lines.append("- See violation details below for specific constraint failures.")
+
+    if not fix_lines:
+        fix_lines.append("- Refine strategy parameters based on the violation details below.")
+
+    wrong_block = "\n".join(wrong_lines)
+    fix_block = "\n".join(fix_lines)
+
+    return (
+        "PREVIOUS ATTEMPT FAILED — BACKTEST RESULTS:\n\n"
+        f"Metrics from last run:\n{metrics_block}\n\n"
+        f"What went wrong:\n{wrong_block}\n\n"
+        f"What to fix:\n{fix_block}\n\n"
+        f"Constraint violations:\n{violations_msg}\n\n"
+        "Do NOT change the overall strategy structure — refine parameters only."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -435,9 +599,13 @@ def build_strategy(spec_path: str, max_iterations: int = 5) -> bool:
         print(f"[gemini_builder] Syntax check passed ({len(code)} chars)")
 
         # Step 6+7: QC upload → LEAN compile → backtest → fitness constraints
-        qc_ok, qc_error = run_qc_upload_eval(spec_path, spec_name, code)
+        qc_ok, qc_error, backtest_stats = run_qc_upload_eval(spec_path, spec_name, code)
         if not qc_ok:
-            feedback = qc_error
+            # Enrich feedback with full metrics when backtest stats are available
+            if backtest_stats:
+                feedback = build_fitness_feedback(qc_error, backtest_stats, spec)
+            else:
+                feedback = qc_error
             print(f"[gemini_builder] QC eval failed:\n{qc_error}", file=sys.stderr)
             continue
 
