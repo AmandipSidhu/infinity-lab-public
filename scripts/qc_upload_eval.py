@@ -13,6 +13,7 @@ FitnessTracker constraints defined in the strategy spec.
 FitnessTracker constraints evaluated:
   - Sharpe Ratio >= 0.5 (hard minimum; spec may require higher)
   - Max Drawdown <= threshold from spec performance_targets
+  - Total Trades >= 50 (hard minimum; spec may require higher via performance_targets.min_trades)
 
 Stub fallback (exit 0, non-blocking):
   - When ``QC_USER_ID`` or ``QC_API_TOKEN`` is not set in the environment
@@ -44,6 +45,7 @@ _QC_BASE_URL: str = "https://www.quantconnect.com/api/v2"
 _QC_USER_ID: str = os.environ.get("QC_USER_ID", "").strip()
 _QC_API_TOKEN: str = os.environ.get("QC_API_TOKEN", "").strip()
 _SHARPE_RATIO_MIN: float = 0.5            # hard floor regardless of spec
+_MIN_TRADES: int = 50                     # hard floor for total trades
 _POLL_INTERVAL_SECONDS: int = 10          # seconds between backtest polls
 _POLL_MAX_ATTEMPTS: int = 60             # max polls (~10 min timeout)
 _COMPILE_POLL_INTERVAL_SECONDS: int = 5   # seconds between compile status polls
@@ -358,6 +360,34 @@ def evaluate_fitness(
                     "required": dd_threshold,
                     "actual": dd_normalized,
                 })
+
+    # --- Total Trades ---
+    trades = _extract_stat(
+        backtest_result, "TotalTrades", "total_trades", "Total Trades", "trades"
+    )
+    min_trades = int(float(spec_performance_targets.get("min_trades", _MIN_TRADES)))
+
+    if trades is None:
+        violations.append({
+            "constraint": "total_trades",
+            "severity": "ERROR",
+            "message": "Total Trades not found in backtest results",
+            "required": min_trades,
+            "actual": None,
+        })
+    else:
+        trades_count = int(trades)
+        if trades_count < min_trades:
+            violations.append({
+                "constraint": "total_trades",
+                "severity": "ERROR",
+                "message": (
+                    f"Total Trades {trades_count} is below required minimum {min_trades}. "
+                    f"Low trade count makes Sharpe statistically unreliable."
+                ),
+                "required": min_trades,
+                "actual": trades_count,
+            })
 
     return violations
 

@@ -102,7 +102,7 @@ class TestExtractStat:
 
 class TestEvaluateFitness:
     def test_pass_when_all_criteria_met(self) -> None:
-        bt = {"statistics": {"SharpeRatio": "1.5", "Drawdown": "0.10"}}
+        bt = {"statistics": {"SharpeRatio": "1.5", "Drawdown": "0.10", "TotalTrades": "100"}}
         targets = {"sharpe_ratio_min": 1.0, "max_drawdown_threshold": 0.20}
         violations = evaluate_fitness(bt, targets)
         assert violations == []
@@ -152,6 +152,63 @@ class TestEvaluateFitness:
         for field in ("constraint", "severity", "message", "required", "actual"):
             assert field in v
 
+    def test_fail_when_trades_below_minimum(self) -> None:
+        bt = {"statistics": {"SharpeRatio": "1.5", "TotalTrades": "10"}}
+        targets = {"sharpe_ratio_min": 1.0}
+        violations = evaluate_fitness(bt, targets)
+        assert any(v["constraint"] == "total_trades" for v in violations)
+        trade_v = next(v for v in violations if v["constraint"] == "total_trades")
+        assert trade_v["actual"] == 10
+        assert trade_v["required"] == 50
+        assert "statistically unreliable" in trade_v["message"]
+
+    def test_pass_when_trades_at_minimum(self) -> None:
+        bt = {"statistics": {"SharpeRatio": "1.5", "TotalTrades": "50"}}
+        targets = {"sharpe_ratio_min": 1.0}
+        violations = evaluate_fitness(bt, targets)
+        assert not any(v["constraint"] == "total_trades" for v in violations)
+
+    def test_pass_when_trades_above_minimum(self) -> None:
+        bt = {"statistics": {"SharpeRatio": "1.5", "TotalTrades": "200"}}
+        targets = {"sharpe_ratio_min": 1.0}
+        violations = evaluate_fitness(bt, targets)
+        assert not any(v["constraint"] == "total_trades" for v in violations)
+
+    def test_fail_when_trades_is_none(self) -> None:
+        bt = {"statistics": {"SharpeRatio": "1.5"}}
+        targets = {"sharpe_ratio_min": 1.0}
+        violations = evaluate_fitness(bt, targets)
+        trade_v = next((v for v in violations if v["constraint"] == "total_trades"), None)
+        assert trade_v is not None
+        assert trade_v["severity"] == "ERROR"
+        assert trade_v["actual"] is None
+        assert trade_v["required"] == 50
+
+    def test_min_trades_spec_override(self) -> None:
+        bt = {"statistics": {"SharpeRatio": "1.5", "TotalTrades": "75"}}
+        targets = {"sharpe_ratio_min": 1.0, "min_trades": 100}
+        violations = evaluate_fitness(bt, targets)
+        trade_v = next((v for v in violations if v["constraint"] == "total_trades"), None)
+        assert trade_v is not None
+        assert trade_v["required"] == 100
+        assert trade_v["actual"] == 75
+
+    def test_min_trades_spec_override_pass(self) -> None:
+        bt = {"statistics": {"SharpeRatio": "1.5", "TotalTrades": "100"}}
+        targets = {"sharpe_ratio_min": 1.0, "min_trades": 100}
+        violations = evaluate_fitness(bt, targets)
+        assert not any(v["constraint"] == "total_trades" for v in violations)
+
+    def test_vwap_probe_scenario(self) -> None:
+        """vwap_probe DAC run: 3 trades, Sharpe 1.803 must produce FAIL (total_trades gate)."""
+        bt = {"statistics": {"SharpeRatio": "1.803", "TotalTrades": "3"}}
+        targets = {"sharpe_ratio_min": 0.5}
+        violations = evaluate_fitness(bt, targets)
+        assert any(v["constraint"] == "total_trades" for v in violations)
+        trade_v = next(v for v in violations if v["constraint"] == "total_trades")
+        assert trade_v["actual"] == 3
+        assert trade_v["required"] == 50
+
 
 # ---------------------------------------------------------------------------
 # upload_and_evaluate (integration)
@@ -167,6 +224,7 @@ class TestUploadAndEvaluate:
             "statistics": {
                 "SharpeRatio": "1.5",
                 "Drawdown": "0.10",
+                "TotalTrades": "100",
             },
             "completed": True,
             "progress": 1.0,
@@ -296,7 +354,7 @@ class TestCLI:
         monkeypatch.setattr(qc_upload_eval, "_QC_API_TOKEN", "test_token")
 
         backtest_result = {
-            "statistics": {"SharpeRatio": "1.5", "Drawdown": "0.10"},
+            "statistics": {"SharpeRatio": "1.5", "Drawdown": "0.10", "TotalTrades": "100"},
             "completed": True,
         }
 
