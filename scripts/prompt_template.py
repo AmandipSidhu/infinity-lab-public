@@ -9,7 +9,56 @@ come directly from the spec.
 """
 
 import sys
+from pathlib import Path
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# Reference strategy loader
+# ---------------------------------------------------------------------------
+
+_FUTURES_SYMBOLS: frozenset[str] = frozenset({"MES", "ES", "NQ", "YM", "RTY", "CL", "GC"})
+
+
+def _load_reference(spec: dict[str, Any]) -> str | None:
+    """Select and load the best matching reference strategy from strategies/reference/.
+
+    Matching priority (first match wins):
+    1. Futures instrument OR VWAP in entry signals → vwap_ema_crossover.py
+    2. SMA or EMA in entry signals (no VWAP) → sma_crossover_robust.py
+    3. mean_reversion trading style with multiple instruments → mean_reversion_multi_asset.py
+    4. Default fallback → sma_crossover_simple.py
+
+    Returns:
+        File contents as a string, or None if the file cannot be read.
+    """
+    instruments = _extract_instruments(spec)
+    signals = _extract_signals(spec)
+    entry_signals = " ".join(signals.get("entry", [])).upper()
+    trading_style = (_get_nested(spec, "metadata", "trading_style") or "").lower()
+
+    has_futures = any(sym.upper() in _FUTURES_SYMBOLS for sym in instruments)
+    has_vwap = "VWAP" in entry_signals
+    has_sma_or_ema = "SMA" in entry_signals or "EMA" in entry_signals
+    is_mean_reversion = "mean_reversion" in trading_style
+
+    if has_futures or has_vwap:
+        filename = "vwap_ema_crossover.py"
+    elif has_sma_or_ema:
+        filename = "sma_crossover_robust.py"
+    elif is_mean_reversion and len(instruments) > 1:
+        filename = "mean_reversion_multi_asset.py"
+    else:
+        filename = "sma_crossover_simple.py"
+
+    ref_path = Path(__file__).parent.parent / "strategies" / "reference" / filename
+    try:
+        return ref_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"[prompt_template] WARNING: could not read reference file {ref_path}: {exc}",
+            file=sys.stderr,
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +211,7 @@ def build_strategy_prompt(spec: dict[str, Any], feedback: str | None = None) -> 
     signals = _extract_signals(spec)
     risk = _extract_risk_management(spec)
     constraints = _extract_constraints(spec)
+    reference_code = _load_reference(spec)
 
     spec_name = (spec.get("metadata") or {}).get("name", "unnamed_strategy")
     description = (spec.get("metadata") or {}).get("description", "").strip()
@@ -203,6 +253,17 @@ def build_strategy_prompt(spec: dict[str, Any], feedback: str | None = None) -> 
             "---"
         )
 
+    reference_section = ""
+    if reference_code:
+        reference_section = (
+            "\n=== REFERENCE IMPLEMENTATION ===\n"
+            "The following is a WORKING, PROVEN QuantConnect LEAN strategy.\n"
+            "Use it as your structural template — match its import style, class structure,\n"
+            "Initialize pattern, and OnData pattern exactly. Adapt the logic to the spec above.\n\n"
+            f"{reference_code}\n"
+            "=== END REFERENCE ===\n"
+        )
+
     prompt = f"""You are an expert QuantConnect LEAN Python strategy developer.
 
 Write a complete, working QuantConnect LEAN algorithm in Python for the following strategy spec.
@@ -229,7 +290,7 @@ Initial capital: ${capital:,.0f}
 
 === RISK MANAGEMENT ===
 {_format_risk_rules(risk)}{constraint_lines}
-
+{reference_section}
 === REQUIREMENTS ===
 - Inherit from QCAlgorithm
 - Implement Initialize(self) and OnData(self, data)
