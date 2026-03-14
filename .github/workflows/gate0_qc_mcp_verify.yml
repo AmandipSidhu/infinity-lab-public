@@ -18,40 +18,56 @@ jobs:
       - name: Start QC MCP server (HTTP mode)
         run: |
           MCP_TRANSPORT=streamable-http MCP_HOST=0.0.0.0 MCP_PORT=8000 uvx quantconnect-mcp &
-          sleep 10
+          echo "Waiting for server to be ready..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/mcp > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          echo "Proceeding with tests"
 
       - name: Test 1 - Auth
         run: |
           echo "## Test 1: Auth" >> $GITHUB_STEP_SUMMARY
-          curl -s -X POST http://localhost:8000/mcp \
+          RESULT=$(curl -X POST http://localhost:8000/mcp \
             -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
             -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"validate_quantconnect_auth","arguments":{}}}' \
-            | tee -a $GITHUB_STEP_SUMMARY
-          echo -e "\n" >> $GITHUB_STEP_SUMMARY
+            2>&1)
+          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Test 2 - read_backtest
         run: |
           echo "## Test 2: read_backtest" >> $GITHUB_STEP_SUMMARY
-          curl -s -X POST http://localhost:8000/mcp \
+          RESULT=$(curl -X POST http://localhost:8000/mcp \
             -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
             -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_backtest","arguments":{"project_id":"28779543","backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
-            | tee -a $GITHUB_STEP_SUMMARY
-          echo -e "\n" >> $GITHUB_STEP_SUMMARY
+            2>&1)
+          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Test 3 - read_backtest_orders
         run: |
           echo "## Test 3: read_backtest_orders" >> $GITHUB_STEP_SUMMARY
-          curl -s -X POST http://localhost:8000/mcp \
+          RESULT=$(curl -X POST http://localhost:8000/mcp \
             -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
             -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_backtest_orders","arguments":{"project_id":"28779543","backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
-            | tee -a $GITHUB_STEP_SUMMARY
-          echo -e "\n" >> $GITHUB_STEP_SUMMARY
+            2>&1)
+          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Test 4 - read_backtest_statistics
         run: |
           echo "## Test 4: read_backtest_statistics" >> $GITHUB_STEP_SUMMARY
-          curl -s -X POST http://localhost:8000/mcp \
+          RESULT=$(curl -X POST http://localhost:8000/mcp \
             -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
             -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_backtest_statistics","arguments":{"project_id":"28779543","backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
-            | tee -a $GITHUB_STEP_SUMMARY
-          echo -e "\n" >> $GITHUB_STEP_SUMMARY
+            2>&1)
+          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
