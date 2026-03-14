@@ -1,0 +1,105 @@
+metadata:
+  name: "QuickStrike Phase 1 ORB Baseline"
+  trading_style: day_trade
+  version: "1.0.0"
+  author: "Infinity Lab"
+  created_at: "2026-03-13"
+  description: >-
+    Standalone Opening Range Breakout strategy on a dynamic universe of
+    $5-$80 equities filtered by dollar volume and share volume.
+    Applies pre-market gap (>=1.5%) and relative volume (>=1.5x 20-day SMA)
+    pre-filters. Confidence-ranked proportional capital allocation across
+    top 10 symbols. ATR-based stops (2x daily ATR). Hard exit 90 minutes
+    after market open (11:00 AM ET). No regime gating. No HMM. ORB edge
+    baseline only — Phase 1 of 3.
+
+capital:
+  allocation_usd: 21000
+
+constraints:
+  max_holding_minutes: 90
+  close_eod: true
+
+data:
+  universe:
+    mode: dynamic
+    screener:
+      criteria: top_volume
+      max_symbols: 300
+      min_price: 5.0
+      max_price: 80.0
+      min_avg_dollar_volume_10d: 10000000
+      min_avg_share_volume_10d: 1000000
+  resolution: minute
+  start_date: "2018-01-01"
+  end_date: "2025-12-31"
+
+signals:
+  entry:
+    - >-
+      At 9:30 AM ET + 5 minutes (end of opening range bar):
+      IF abs(gap_pct) >= 0.015 (gap_pct = (today_open - prev_close) / prev_close)
+      AND opening_bar_volume >= 1.5 * volume_sma_20
+      AND opening_bar closes bullish (close > open):
+        place stop_market_order LONG at opening_bar.high
+        stop = opening_bar.high - (2.0 * ATR(14, daily))
+    - >-
+      At 9:30 AM ET + 5 minutes:
+      IF abs(gap_pct) >= 0.015
+      AND opening_bar_volume >= 1.5 * volume_sma_20
+      AND opening_bar closes bearish (close < open):
+        place stop_market_order SHORT at opening_bar.low
+        stop = opening_bar.low + (2.0 * ATR(14, daily))
+  exit:
+    - "Stop loss hit: ATR(14, daily) * 2.0 from entry price"
+    - "Hard time exit at 90 minutes after market open (11:00 AM ET exactly) — liquidate all positions"
+
+risk_management:
+  stop_loss:
+    atr_multiplier: 2.0
+  position_sizing: confidence_proportional
+  leverage: 4.0
+  max_positions: 10
+  risk_per_trade_pct: 1.0
+  notes: >-
+    Confidence score = (abs(gap_pct)/0.015)*0.5 + (volume_ratio/1.5)*0.5.
+    total_risk_capital = portfolio_value * 0.10.
+    Each position risk = (score / sum_scores) * total_risk_capital.
+    Cap at top 10 symbols by score. Use VolumeWeightedAveragePriceExecutionModel.
+    quantity_limit = abs(calculate_order_quantity(symbol, 1/max_positions)).
+    Entry flag (_entry_placed) resets EOD only, not mid-session.
+
+acceptance_criteria:
+  max_drawdown_pct: 25.0
+  min_sharpe_ratio: 1.0
+  min_profit_factor: 1.3
+  min_trades: 200
+  min_cagr: 15.0
+
+assumptions:
+  fees: 0.001
+  slippage: 0.0005
+
+notes: |
+  Phase 1 of 3 — ORB edge baseline. No HMM, no regime gating, no strategy routing.
+  Bug fixes applied vs Yuri Lopukhov base:
+    1. stop_loss_atr_multiplier = 2.0 (was entry_gap = 0.1)
+    2. _entry_placed guard — resets EOD via scheduler, not mid-session
+    3. quantity_limit wrapped in abs() for short-side correctness
+  Universe: monthly refresh, top 300 by dollar volume, $5-$80 price band.
+  ATR: Resolution.DAILY (not MINUTE) — critical for correct stop distance.
+  volumeSMA: 20-period, fed from consolidation_handler only.
+  gap_pct: computed from prev_close at consolidation time (no look-ahead).
+  Execution: VolumeWeightedAveragePriceExecutionModel.
+  Required backtest periods (run all five, report all seven metrics per period):
+    Period 1: 2018-01-01 to 2019-12-31 (pre-COVID baseline)
+    Period 2: 2020-01-01 to 2020-12-31 (COVID stress)
+    Period 3: 2022-01-01 to 2022-12-31 (bear market)
+    Period 4: 2024-01-01 to 2025-12-31 (recent bull)
+    Period 5: 2018-01-01 to 2025-12-31 (full range)
+  Metrics per period: Sharpe, max_drawdown_pct, total_return_pct, win_rate_pct,
+    avg_winner_loser_ratio, total_trades, avg_trades_per_day.
+  Pass gate: Sharpe >= 1.0 AND max_drawdown <= 25% on ALL five periods.
+  Output: strategies/quickstrike_phase1_orb.py + backtests/phase1_orb_baseline_results.md
+  Tracked in: UNI-95, UNI-91
+  Mia2 parallel run initiated: 2026-03-13 (comparison baseline)
