@@ -1,0 +1,50 @@
+name: Gate 0 – QC MCP Server Verify
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify-qc-mcp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+
+    steps:
+      - name: Install uv
+        run: pip install uv
+
+      - name: Start quantconnect-mcp server
+        env:
+          QUANTCONNECT_USER_ID: ${{ secrets.QC_USER_ID }}
+          QUANTCONNECT_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+        run: |
+          MCP_TRANSPORT=streamable-http MCP_HOST=0.0.0.0 MCP_PORT=8000 uvx quantconnect-mcp &
+          sleep 8
+
+      - name: Test 1 Auth
+        run: |
+          curl -s -X POST http://localhost:8000/mcp \
+            -H "Content-Type: application/json" \
+            -d '{"method":"tools/call","params":{"name":"validate_quantconnect_auth","arguments":{}}}' \
+          | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Test 2 read_backtest
+        run: |
+          curl -s -X POST http://localhost:8000/mcp \
+            -H "Content-Type: application/json" \
+            -d '{"method":"tools/call","params":{"name":"read_backtest","arguments":{"project_id":"28779543","backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
+          | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Test 3 read_backtest_orders
+        run: |
+          curl -s -X POST http://localhost:8000/mcp \
+            -H "Content-Type: application/json" \
+            -d '{"method":"tools/call","params":{"name":"read_backtest_orders","arguments":{"project_id":"28779543","backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
+          | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Test 4 read_backtest_statistics
+        run: |
+          curl -s -X POST http://localhost:8000/mcp \
+            -H "Content-Type: application/json" \
+            -d '{"method":"tools/call","params":{"name":"read_backtest_statistics","arguments":{"project_id":"28779543","backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
+          | tee -a "$GITHUB_STEP_SUMMARY"
