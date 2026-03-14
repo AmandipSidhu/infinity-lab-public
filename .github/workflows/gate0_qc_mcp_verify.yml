@@ -28,12 +28,29 @@ jobs:
           done
           echo "Proceeding with tests"
 
+      - name: Initialize MCP session
+        run: |
+          echo "## Session Init" >> $GITHUB_STEP_SUMMARY
+          # Step 1: initialize — get session ID from response headers
+          INIT_RESPONSE=$(curl -v -L -X POST http://localhost:8000/mcp/ \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gate0-test","version":"1.0"}}}' \
+            2>&1)
+          echo "$INIT_RESPONSE" | tee -a $GITHUB_STEP_SUMMARY
+          # Extract session ID from headers
+          SESSION_ID=$(echo "$INIT_RESPONSE" | grep -i 'mcp-session-id' | sed 's/.*mcp-session-id: //I' | tr -d '\r')
+          echo "SESSION_ID=$SESSION_ID" >> $GITHUB_ENV
+          echo "Extracted session ID: $SESSION_ID" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
       - name: Test 1 - Auth
         run: |
           echo "## Test 1: Auth" >> $GITHUB_STEP_SUMMARY
           RESULT=$(curl -L -X POST http://localhost:8000/mcp/ \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
+            -H "mcp-session-id: $SESSION_ID" \
             -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"validate_quantconnect_auth","arguments":{}}}' \
             2>&1)
           echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
@@ -45,6 +62,7 @@ jobs:
           RESULT=$(curl -L -X POST http://localhost:8000/mcp/ \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
+            -H "mcp-session-id: $SESSION_ID" \
             -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_backtest","arguments":{"project_id":"28779543","backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
             2>&1)
           echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
@@ -56,6 +74,7 @@ jobs:
           RESULT=$(curl -L -X POST http://localhost:8000/mcp/ \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
+            -H "mcp-session-id: $SESSION_ID" \
             -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_backtest_orders","arguments":{"project_id":"28779543","backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
             2>&1)
           echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
@@ -67,6 +86,7 @@ jobs:
           RESULT=$(curl -L -X POST http://localhost:8000/mcp/ \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
+            -H "mcp-session-id: $SESSION_ID" \
             -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_backtest_statistics","arguments":{"project_id":"28779543","backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
             2>&1)
           echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
