@@ -1,9 +1,9 @@
 # DAC v2 Architecture — Mia2-Style Build Loop
 
-**Version:** 2.1  
+**Version:** 2.2  
 **Status:** Design complete — pending Gate 0 (UNI-97) + implementation  
 **Supersedes:** DAC v1 (`gemini_builder.py` + `qc_upload_eval.py` pattern, UNI-95)  
-**Linear refs:** [UNI-96](https://linear.app/universaltrading/issue/UNI-96) · [UNI-97](https://linear.app/universaltrading/issue/UNI-97)
+**Linear refs:** [UNI-96](https://linear.app/universaltrading/issue/UNI-96) · [UNI-97](https://linear.app/universaltrading/issue/UNI-97) · [UNI-99](https://linear.app/universaltrading/issue/UNI-99)
 
 ---
 
@@ -31,6 +31,7 @@ Mia2 does not guess. It reads `read_backtest_orders`, `read_backtest_statistics`
 | **Hypothesis formation** | None — blind retry | Agent forms and scores hypotheses before retrying |
 | **Human checkpoint** | None | Phase 3: agent surfaces diagnosis, halts or self-corrects per `AUTO_ITERATE` flag |
 | **Slack** | Not present | Output notifications — v1 scope (see below) |
+| **Reference library** | None | `fetch_reference` tool — retrieves docs on demand (RAG pattern) |
 
 `qc_upload_eval.py` is **retired** from the agent feedback loop. The REST API is not used for backtest reads. MCP tool calls replace it entirely.
 
@@ -63,6 +64,7 @@ Three environments. Each has exactly one role. None overlap.
 │  • Reads spec YAML                                          │
 │  • Calls Gemini SDK directly (no CLI)                       │
 │  • Calls QC MCP HTTP server for all QC operations           │
+│  • Calls fetch_reference for LEAN best practices on demand  │
 │  • Runs Phase 1 → 2 → 3 loop entirely inside runner        │
 │  • Posts Slack notifications at every phase transition      │
 │                                                             │
@@ -71,24 +73,136 @@ Three environments. Each has exactly one role. None overlap.
           │ HTTP tool calls          │ Slack webhook (output only)
           ▼                          ▼
 ┌────────────────────┐  ┌────────────────────┐
-│  GCP e2-micro            │  │  SLACK (v1: output)    │
-│  QC MCP HTTP server      │  │                        │
-│  (always-on)             │  │  Receives:             │
-│                          │  │  • Build start        │
-│  uvx quantconnect-mcp    │  │  • Compile errors     │
-│  streamable-http :8000   │  │  • Backtest complete  │
-│                          │  │  • Phase 3 diagnosis  │
-│  Tools per iteration:    │  │  • Pass / hard fail   │
-│  update_file_contents    │  │                        │
-│  create_compile          │  │  Read-only window.     │
-│  read_compile            │  │  No input in v1.       │
-│  create_backtest         │  └────────────────────┘
-│  read_backtest           │
-│  read_backtest_orders    │
-│  read_backtest_statistics│
-│  read_backtest_logs      │
+│  GCP e2-micro      │  │  SLACK (v1: output)│
+│  QC MCP HTTP server│  │                    │
+│  (always-on)       │  │  Receives:         │
+│                    │  │  • Build start     │
+│  uvx quantconnect  │  │  • Compile errors  │
+│  -mcp :8000        │  │  • Backtest done   │
+│                    │  │  • Phase 3 halt    │
+│  Tools per iter:   │  │  • Pass / fail     │
+│  update_file       │  │                    │
+│  create_compile    │  │  Read-only v1.     │
+│  read_compile      │  └────────────────────┘
+│  create_backtest   │
+│  read_backtest     │
+│  read_backtest_    │
+│    orders          │
+│  read_backtest_    │
+│    statistics      │
+│  read_backtest_    │
+│    logs            │
 └────────────────────┘
 ```
+
+---
+
+## Reference Library (RAG Pattern)
+
+> **Decision date:** 2026-03-14  
+> **Supersedes:** earlier proposal to embed reference content in `prompt_template.py`
+
+### Why Not Embedding
+
+The rejected approach was to hardcode LEAN guard rails, built-in class lists, timing patterns, and realism settings directly into `prompt_template.py`. This was wrong for three reasons:
+
+1. **Couples docs to code** — updating a best practice requires a PR to a production script, a code review, and a merge
+2. **Degrades LLM attention** — large static blocks buried in a prompt are known to receive degraded attention; the model processes what's near the active reasoning, not what's padded in
+3. **Wrong separation of concerns** — knowledge is not code; they should change independently
+
+### The Pattern: Retrieval on Demand
+
+The reference library lives in `docs/lean_reference/` as plain markdown files. DAC calls a `fetch_reference` tool when it needs something specific. Only the relevant content enters the context — not the full library on every build.
+
+```
+❌ WRONG:
+  prompt_template.py contains 300+ lines of guard rails,
+  class tables, code snippets, bias rules...
+  → bloats every prompt regardless of what's needed
+  → requires code PR to update a doc
+
+✅ CORRECT:
+  docs/lean_reference/
+    guard_rails.md
+    lean_builtins.md
+    timing_patterns.md
+    realism_settings.md
+    research_integrity.md
+  → DAC calls fetch_reference(topic) before writing code
+  → only relevant chunks injected into active context
+  → docs updated via normal markdown PRs — zero production code touched
+```
+
+### Reference Library Structure
+
+```
+docs/lean_reference/
+  README.md                ← topic index + when to use each file
+  guard_rails.md           ← warmup, market-open, zero-qty, tradable checks
+  lean_builtins.md         ← full Tier 3 built-in class list with import paths
+  timing_patterns.md       ← schedule.on patterns, stale price, free portfolio %
+  realism_settings.md      ← brokerage models, slippage, fee models
+  research_integrity.md    ← bias table, walk-forward rules, hypothesis-first rule
+```
+
+Source of truth for content: **[UNI-99](https://linear.app/universaltrading/issue/UNI-99)**. When creating these files, migrate from UNI-99 body — do not re-author from scratch.
+
+### The `fetch_reference` Tool (added to `gemini_builder.py`)
+
+```python
+fetch_reference_tool = {
+    "name": "fetch_reference",
+    "description": (
+        "Retrieve LEAN/QC best practice documentation from the internal reference library. "
+        "Call this before writing any strategy code. "
+        "Topics: 'guard_rails', 'lean_builtins', 'timing_patterns', "
+        "'realism_settings', 'research_integrity'"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "topic": {
+                "type": "string",
+                "description": "The reference topic to fetch (must match a filename in docs/lean_reference/)"
+            }
+        },
+        "required": ["topic"]
+    }
+}
+```
+
+**Handler implementation (~20 lines):** GitHub raw content fetch against
+`https://raw.githubusercontent.com/AmandipSidhu/infinity-lab-public/main/docs/lean_reference/{topic}.md`
+
+One HTTP GET. No database. No vector index. No new infrastructure.
+
+### Why Not a Vector DB
+
+At this scale (5–10 markdown files, ~500 lines total), a vector database adds infrastructure complexity with no meaningful benefit. The retrieval problem here is **topic lookup, not semantic search** — DAC knows exactly what it needs ("guard rails", "built-in PCM classes"). Direct file fetch by topic is faster, zero-maintenance, and completely auditable. A vector DB is the right call when the library grows to hundreds of documents with overlapping content — not now.
+
+### What Stays in `prompt_template.py`
+
+Only content that is **structurally true and never changes**:
+
+| What | Why it stays |
+| -- | -- |
+| DAC role definition | Permanent |
+| Phase 1 → 2 → 3 loop structure | Core architecture |
+| Hard constraints (no stubs, no hardcoded indicators) | Non-negotiable |
+| Instruction: "call `fetch_reference` before writing code" | Bootstraps retrieval |
+
+Nothing else. No code snippets. No class lists. No pattern blocks.
+
+### Build Impact
+
+| Component | Change |
+| -- | -- |
+| `scripts/prompt_template.py` | Shrinks — remove all embedded reference content; add one retrieval instruction |
+| `scripts/gemini_builder.py` | Add `fetch_reference` function declaration + handler (~20 lines) |
+| `docs/lean_reference/` | New directory — 5 markdown files created once from UNI-99, maintained independently |
+| Everything else | No change |
+
+> This is a **smaller DAC v2 build** than the embed approach — not larger.
 
 ---
 
@@ -167,6 +281,8 @@ One process. One LLM session. One unbroken context.
 
 ```
 load spec YAML
+call fetch_reference('guard_rails')      ← retrieves relevant LEAN patterns
+call fetch_reference('lean_builtins')    ← checks for drop-in built-in classes first
 build prompt (all fields injected — zero hardcoded indicators)
 call Gemini SDK
 extract code block
@@ -234,6 +350,7 @@ if AUTO_ITERATE=false:
 - **NEVER stub** — no skeleton code, no `pass`, no placeholder — hard fail instead
 - **Prompt reads all fields from spec YAML** — zero hardcoded indicator values
 - **Each iteration prompt includes the previous error verbatim**
+- **Call `fetch_reference` before writing code** — built-ins first, custom code last
 - **Phase 2 MUST call** `read_backtest_orders`, `read_backtest_statistics`, `read_backtest_logs` — not just scalar checks
 - **Phase 3 checkpoint MUST surface a hypothesis**, not just a failure code
 - **Slack posts are fire-and-forget** — never block the build loop waiting for a reply
@@ -301,6 +418,7 @@ Before any DAC v2 code is written, all five of these must pass:
 - **UNI-95** — DAC v1 design: https://linear.app/universaltrading/issue/UNI-95
 - **UNI-96** — DAC v2 Mia2 architecture: https://linear.app/universaltrading/issue/UNI-96
 - **UNI-97** — Gate 0 QC MCP verification: https://linear.app/universaltrading/issue/UNI-97
+- **UNI-99** — LEAN/QC best practices (source for `docs/lean_reference/`): https://linear.app/universaltrading/issue/UNI-99
 - **SPEC_TEMPLATE.md** — `docs/SPEC_TEMPLATE.md` (this repo)
 - **quantconnect-mcp** — https://pypi.org/project/quantconnect-mcp/
 - **Official QC MCP docs** — https://www.quantconnect.com/docs/v2/ai-assistance/mcp-server/key-concepts
