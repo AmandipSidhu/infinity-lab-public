@@ -1,6 +1,6 @@
 # DAC v2 Architecture — Mia2-Style Build Loop
 
-**Version:** 2.0  
+**Version:** 2.1  
 **Status:** Design complete — pending Gate 0 (UNI-97) + implementation  
 **Supersedes:** DAC v1 (`gemini_builder.py` + `qc_upload_eval.py` pattern, UNI-95)  
 **Linear refs:** [UNI-96](https://linear.app/universaltrading/issue/UNI-96) · [UNI-97](https://linear.app/universaltrading/issue/UNI-97)
@@ -30,6 +30,7 @@ Mia2 does not guess. It reads `read_backtest_orders`, `read_backtest_statistics`
 | **Session continuity** | Build session dies; separate process reads backtest | One unbroken session: the LLM that wrote line 47 is still alive when the backtest says line 47 is wrong |
 | **Hypothesis formation** | None — blind retry | Agent forms and scores hypotheses before retrying |
 | **Human checkpoint** | None | Phase 3: agent surfaces diagnosis, halts or self-corrects per `AUTO_ITERATE` flag |
+| **Slack** | Not present | Output notifications — v1 scope (see below) |
 
 `qc_upload_eval.py` is **retired** from the agent feedback loop. The REST API is not used for backtest reads. MCP tool calls replace it entirely.
 
@@ -63,34 +64,59 @@ Three environments. Each has exactly one role. None overlap.
 │  • Calls Gemini SDK directly (no CLI)                       │
 │  • Calls QC MCP HTTP server for all QC operations           │
 │  • Runs Phase 1 → 2 → 3 loop entirely inside runner        │
+│  • Posts Slack notifications at every phase transition      │
 │                                                             │
 │  No QC REST API. No qc_upload_eval.py. MCP only.           │
 └───────────────────────┬─────────────────────────────────────┘
-                        │  HTTP tool calls (every iteration)
-                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│  GCP e2-micro (QC MCP HTTP server — always-on)             │
-│                                                             │
-│  uvx quantconnect-mcp                                       │
-│  MCP_TRANSPORT=streamable-http                              │
-│  MCP_HOST=0.0.0.0  MCP_PORT=8000                           │
-│  Running as: systemd service                               │
-│  Endpoint: http://<GCP_IP>:8000/mcp                        │
-│                                                             │
-│  Tools called per iteration:                                │
-│    update_file_contents  (write code to QC cloud)          │
-│    create_compile        (trigger compile)                  │
-│    read_compile          (get raw error)                    │
-│    create_backtest       (trigger backtest)                 │
-│    read_backtest         (full stats object)                │
-│    read_backtest_orders  (order-level data)                 │
-│    read_backtest_statistics (Sharpe, drawdown, win rate)   │
-│    read_backtest_logs    (runtime log output)               │
-│                                                             │
-│  Package: quantconnect-mcp (PyPI, community)               │
-│  Ref: https://pypi.org/project/quantconnect-mcp/           │
-└─────────────────────────────────────────────────────────────┘
+          │ HTTP tool calls          │ Slack webhook (output only)
+          ▼                          ▼
+┌────────────────────┐  ┌────────────────────┐
+│  GCP e2-micro            │  │  SLACK (v1: output)    │
+│  QC MCP HTTP server      │  │                        │
+│  (always-on)             │  │  Receives:             │
+│                          │  │  • Build start        │
+│  uvx quantconnect-mcp    │  │  • Compile errors     │
+│  streamable-http :8000   │  │  • Backtest complete  │
+│                          │  │  • Phase 3 diagnosis  │
+│  Tools per iteration:    │  │  • Pass / hard fail   │
+│  update_file_contents    │  │                        │
+│  create_compile          │  │  Read-only window.     │
+│  read_compile            │  │  No input in v1.       │
+│  create_backtest         │  └────────────────────┘
+│  read_backtest           │
+│  read_backtest_orders    │
+│  read_backtest_statistics│
+│  read_backtest_logs      │
+└────────────────────┘
 ```
+
+---
+
+## Slack Integration
+
+### v1 Scope (DAC v2 — this build)
+
+Slack is **output only**. The build loop posts notifications at every meaningful state transition. No input, no webhook listener, no reply handling.
+
+**Posts sent:**
+
+| Event | Message |
+| -- | -- |
+| Build start | `🔨 Building {name} — iteration 1 (Gemini Flash)` |
+| Compile error caught | `⚠️ Compile error: {raw error line}. Retrying iteration {n}...` |
+| Clean compile | `✅ Compiled clean — starting backtest` |
+| Backtest result + hypothesis | `📊 Backtest: Sharpe {x} (need {y}). Hypothesis: {top hypothesis}. {AUTO_ITERATE action}` |
+| Phase 3 halt | `🛑 Halted after {n} iterations. Best Sharpe: {x}. {diagnosis + proposed fix}` |
+| Pass | `🟢 PASS — {name} written to strategies/{name}/main.py. Sharpe {x}, drawdown {y}%` |
+| Hard fail | `🔴 FAILED — {name} after {n} iterations. No file written. {final error}` |
+
+**Secret already in repo:** `SLACK_WEBHOOK_URL` — no new infrastructure required.
+
+### v2 Scope (future — not in this build)
+
+Slack becomes a **two-way channel**: user replies to a Phase 3 halt message in plain English, a webhook triggers `workflow_dispatch`, Perplexity infers the redirect, a new spec PR is created automatically.
+
+> **Scope gate:** Do not implement Slack input handling until DAC v2 is running end-to-end and producing real Phase 3 halts. Build the input channel against real output, not hypothetical output.
 
 ---
 
@@ -112,7 +138,7 @@ spec YAML (complete, valid, exit code 0)
           ↓
 Perplexity commits PR via GitHub MCP
   push_files → branch
-  create_pull_request → triggers GH Actions
+  create_pull_request → triggers GH Actions on merge
           ↓
 DAC v2 build loop begins
 ```
@@ -146,11 +172,13 @@ call Gemini SDK
 extract code block
 syntax check (py_compile)
   fail → feed error verbatim → retry
+  → Slack: compile error notification
 QC MCP: update_file_contents  (write to QC cloud)
 QC MCP: create_compile
 QC MCP: read_compile
   compile error → feed raw error verbatim → retry
-clean compile → Phase 2
+  → Slack: LEAN compile error notification
+clean compile → Slack: clean compile notification → Phase 2
 ```
 
 ### Phase 2 — Backtest + Deep Read
@@ -168,24 +196,26 @@ Agent reasons over raw data:
   → scores hypotheses by impact
   → checks acceptance_criteria from spec
 
-criteria met → write strategies/{name}/main.py → DONE
-criteria not met → Phase 3
+criteria met → Slack: PASS → write strategies/{name}/main.py → DONE
+criteria not met → Slack: backtest result + top hypothesis → Phase 3
 ```
 
 ### Phase 3 — Checkpoint
 
 ```
-output diagnosis:
-  → top hypothesis
-  → supporting data (specific order stats, fee breakdown, log excerpts)
-  → proposed fix
-→ post to Slack + GITHUB_STEP_SUMMARY
+Slack: post full diagnosis
+  • top hypothesis with supporting data
+  • specific order stats, fee breakdown, log excerpts
+  • proposed fix
+  • AUTO_ITERATE action taken
+GITHUB_STEP_SUMMARY: same content
 
 if AUTO_ITERATE=true:
   apply top hypothesis → back to Phase 1
 if AUTO_ITERATE=false:
-  halt — await human decision
-  (human responds in plain English → Perplexity re-infers → new PR)
+  halt — Slack: halted message — await human
+  human comes back here (Perplexity), describes redirect
+  → Perplexity infers new spec → new PR → new build
 ```
 
 ### Iteration / Model Escalation
@@ -206,6 +236,7 @@ if AUTO_ITERATE=false:
 - **Each iteration prompt includes the previous error verbatim**
 - **Phase 2 MUST call** `read_backtest_orders`, `read_backtest_statistics`, `read_backtest_logs` — not just scalar checks
 - **Phase 3 checkpoint MUST surface a hypothesis**, not just a failure code
+- **Slack posts are fire-and-forget** — never block the build loop waiting for a reply
 - `AUTO_ITERATE` flag controls self-correction vs human-in-the-loop
 - Token limits are a later problem — design for correctness first
 
@@ -221,6 +252,7 @@ if AUTO_ITERATE=false:
 | `qc_promote.py` | ✅ Unchanged | Promotion gate unchanged |
 | `aider_builder.py` | ✅ Preserved | Parallel pipeline, not removed |
 | `qc_upload_eval.py` | ❌ Retired from agent loop | Replaced by MCP tool calls |
+| Slack input webhook | ❌ Not in v1 | Deferred to v2 scope (see Slack section) |
 
 ---
 
@@ -240,13 +272,13 @@ if AUTO_ITERATE=false:
 
 ### GitHub Secrets Required
 
-| Secret | Usage |
-| -- | -- |
-| `GEMINI_API_KEY` | Gemini SDK calls in DAC v2 |
-| `QC_USER_ID` | QC MCP server auth |
-| `QC_TOKEN` | QC MCP server auth |
-| `QC_MCP_URL` | `http://<GCP_IP>:8000/mcp` — the permanent MCP endpoint |
-| `SLACK_WEBHOOK_URL` | Phase 3 checkpoint notifications |
+| Secret | Status | Usage |
+| -- | -- | -- |
+| `GEMINI_API_KEY` | ❌ Needed | Gemini SDK calls in DAC v2 |
+| `QC_USER_ID` | ✅ Exists | QC MCP server auth |
+| `QC_TOKEN` | ✅ Exists | QC MCP server auth |
+| `QC_MCP_URL` | ❌ Needed | `http://<GCP_IP>:8000/mcp` — set after GCP deploy |
+| `SLACK_WEBHOOK_URL` | ✅ Exists | Phase notifications (output only) |
 
 ---
 
