@@ -1,8 +1,42 @@
 # DAC v2 Architecture
 
-**Version:** 2.2  
+**Version:** 2.3  
 **Last updated:** 2026-03-15  
 **Status:** Designed — blocked on Gate 0 (UNI-97)
+
+---
+
+## 0. North Star — What We Are Building
+
+> **One agent. One session. One unbroken context. A trading strategy that compiles, backtests, and self-diagnoses — grounded in real market knowledge, at near-zero cost.**
+
+**Status: APPROVED 2026-03-15. Every architectural decision, every PR, every spec must be evaluated against these eight pillars. A proposed change that conflicts with any pillar requires explicit override approval before proceeding.**
+
+### The Eight Pillars
+
+**1. Mia2 Process, Not Mia2 Product**  
+We are not replicating the UI, the brand, or the product. We are replicating **the loop** — the model that wrote line 47 is still alive when the backtest says line 47 is wrong. Every decision is evaluated against: *does this preserve the unbroken context?*
+
+**2. Deep Read, Not PASS/FAIL**  
+The agent must see **raw backtest data** — `read_backtest_orders`, `read_backtest_statistics`, `read_backtest_logs` — and reason over it unprompted. A formatted violation string is not acceptable. The Mia2 gold standard: "9,253 orders, $5,666 in fees on a $21k account" is a diagnosis. "Sharpe below threshold" is not.
+
+**3. Trading-Grounded, Not Template-Grounded**  
+Every strategy must be driven by a **trading hypothesis first** — not a template that happens to pass gates. Hypothesis before code; spec fields drive the prompt (no hardcoded VWAP/ATR); research integrity rules baked in via the LEAN reference library.
+
+**4. No Stubs. Ever.**  
+A strategy that compiles but trades nothing is worse than a failure — it wastes a backtest slot and produces false signal. Hard fail after N iterations. No skeleton. No `pass`. No placeholder. Non-negotiable constraint, not a preference.
+
+**5. Near-Zero Cost**  
+Gemini free tier first, Pro only after Flash fails 3 times. Cost is a first-class constraint. Every architectural choice (RAG over vector DB, `urllib` over `requests`, no new infra) reflects this.
+
+**6. Interruptible and Visible**  
+`AUTO_ITERATE=true` = walk away mode. `AUTO_ITERATE=false` = checkpoint at every backtest. Either way, Slack posts diagnosis at every phase transition — hypothesis, supporting data, proposed fix. No opaque black-box runs. You own every capital decision.
+
+**7. Human Stays in the Loop on Strategy Logic**  
+DAC writes code from a spec *you* approved. The hypothesis is yours. DAC does not invent strategy ideas — it implements them faithfully and diagnoses failures. Perplexity authors the spec YAML; Copilot creates PRs; DAC builds. Capital decisions never leave Amandip.
+
+**8. Backtests Must Reflect Reality**  
+Realistic slippage, realistic fees, realistic brokerage model on every run — not LEAN's default zero-slippage. A backtest that passes on paper and fails live is a worse outcome than a backtest that fails early. Realism settings are non-negotiable.
 
 ---
 
@@ -295,7 +329,7 @@ Source: `QuantConnect/HandsOnAITradingBook` (2024, QC-official)
 - **UNI-96** (DAC v2 architecture): https://linear.app/universaltrading/issue/UNI-96
 - **UNI-97** (Gate 0 verification): https://linear.app/universaltrading/issue/UNI-97
 - **UNI-98** (Gate 0 Copilot task): https://linear.app/universaltrading/issue/UNI-98
-- **UNI-99** (LEAN best practices / RAG source): https://linear.app/universaltrading/issue/UNI-99
+- **UNI-99** (LEAN best practices / RAG source + North Star): https://linear.app/universaltrading/issue/UNI-99
 - **UNI-95** (DAC v1 — merged PR #122): https://linear.app/universaltrading/issue/UNI-95
 - **Mia2 demo video**: https://www.youtube.com/watch?v=lKzPauVifZY
 - **QC MCP community package**: https://pypi.org/project/quantconnect-mcp/
