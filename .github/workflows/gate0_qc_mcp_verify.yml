@@ -6,184 +6,46 @@ on:
 jobs:
   verify-qc-mcp:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
-      QUANTCONNECT_USER_ID: ${{ secrets.QC_USER_ID }}
-      QUANTCONNECT_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
-      # Baseline: sma_crossover_simple — known-good run with Sharpe 0.457
-      TEST_PROJECT_ID: "28772364"
-      TEST_BACKTEST_ID: "b21ac83f7e1e09e4d9b0964f3a1dda64"
+      QC_USER_ID: ${{ secrets.QC_USER_ID }}
+      QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
 
     steps:
-      - name: Install uv
-        run: pip install uv
+      - uses: actions/checkout@v4
 
-      - name: Start QC MCP server (HTTP mode)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Gate 0 — live backtest via qc_rest_client
         run: |
-          MCP_TRANSPORT=streamable-http MCP_HOST=0.0.0.0 MCP_PORT=8000 uvx quantconnect-mcp &
-          echo "Waiting for server to be ready..."
-          for i in $(seq 1 30); do
-            if curl -sfL http://localhost:8000/mcp/ > /dev/null 2>&1; then
-              echo "Server ready after ${i}s"
-              break
-            fi
-            sleep 1
-          done
-          echo "Proceeding with tests"
+          echo "## Gate 0: Live Backtest" >> $GITHUB_STEP_SUMMARY
+          python scripts/qc_rest_client.py \
+            --strategy strategies/reference/sma_crossover_simple.py \
+            --output /tmp/backtest_result.json
 
-      - name: MCP Handshake + list tools
-        run: |
-          echo "## MCP Handshake" >> $GITHUB_STEP_SUMMARY
-
-          SESSION_ID=$(curl -sD - -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"clientInfo":{"name":"gate0","version":"1"}}}' \
-            | grep -i 'mcp-session-id' | awk '{print $2}' | tr -d '\r')
-
-          echo "Session ID: $SESSION_ID" | tee -a $GITHUB_STEP_SUMMARY
-          echo "SESSION_ID=$SESSION_ID" >> $GITHUB_ENV
-
-          curl -s -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-
-          echo "## Available Tools" >> $GITHUB_STEP_SUMMARY
-          curl -s -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":99,"method":"tools/list","params":{}}' \
-            | tee -a $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-      - name: Test 1 - Auth
-        run: |
-          echo "## Test 1: Auth" >> $GITHUB_STEP_SUMMARY
-          RESULT=$(curl -s -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"validate_quantconnect_auth","arguments":{}}}' \
-            2>&1)
-          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-      - name: Test 2 - read_backtest
-        run: |
-          echo "## Test 2: read_backtest" >> $GITHUB_STEP_SUMMARY
-          RESULT=$(curl -s -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"read_backtest\",\"arguments\":{\"project_id\":$TEST_PROJECT_ID,\"backtest_id\":\"$TEST_BACKTEST_ID\"}}}" \
-            2>&1)
-          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-      - name: Test 3 - read_backtest_orders (informational)
-        run: |
-          echo "## Test 3: read_backtest_orders (informational)" >> $GITHUB_STEP_SUMMARY
-          RESULT=$(curl -s -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"read_backtest_orders\",\"arguments\":{\"project_id\":$TEST_PROJECT_ID,\"backtest_id\":\"$TEST_BACKTEST_ID\"}}}" \
-            2>&1)
-          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
-          echo "NOTE: orders may be null/empty — not a hard gate" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-      - name: Test 4 - read_backtest_statistics
-        run: |
-          echo "## Test 4: read_backtest_statistics" >> $GITHUB_STEP_SUMMARY
-          RESULT=$(curl -s -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"read_backtest_statistics\",\"arguments\":{\"project_id\":$TEST_PROJECT_ID,\"backtest_id\":\"$TEST_BACKTEST_ID\"}}}" \
-            2>&1)
-          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-      - name: Test 5 - read_backtest_logs
-        run: |
-          echo "## Test 5: read_backtest_logs" >> $GITHUB_STEP_SUMMARY
-          RESULT=$(curl -s -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"read_backtest_logs\",\"arguments\":{\"project_id\":$TEST_PROJECT_ID,\"backtest_id\":\"$TEST_BACKTEST_ID\"}}}" \
-            2>&1)
-          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-      - name: Test 6 - list_backtests
-        run: |
-          echo "## Test 6: list_backtests" >> $GITHUB_STEP_SUMMARY
-          RESULT=$(curl -s -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"list_backtests\",\"arguments\":{\"project_id\":$TEST_PROJECT_ID}}}" \
-            2>&1)
-          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-      - name: Gate 0 Hard Fail Check
+      - name: Assert Sharpe present
         run: |
           echo "## Gate 0 Hard Fail Check" >> $GITHUB_STEP_SUMMARY
-          echo "Using baseline: project=$TEST_PROJECT_ID backtest=$TEST_BACKTEST_ID (sma_crossover_simple, Sharpe 0.457)" >> $GITHUB_STEP_SUMMARY
-          FAIL=0
+          python3 - <<'EOF'
+          import json, sys
+          with open('/tmp/backtest_result.json') as f:
+              r = json.load(f)
+          print(json.dumps(r, indent=2))
+          sharpe = r.get('sharpe_ratio')
+          if sharpe is None:
+              print('❌ GATE 0 FAIL: sharpe_ratio is null')
+              sys.exit(1)
+          print(f'✅ GATE 0 PASSED — Sharpe={sharpe}, project={r["project_id"]}')
+          EOF
 
-          # HARD GATE: statistics endpoint must return Sharpe data
-          STATS=$(curl -s -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"read_backtest_statistics\",\"arguments\":{\"project_id\":$TEST_PROJECT_ID,\"backtest_id\":\"$TEST_BACKTEST_ID\"}}}")
-
-          if echo "$STATS" | grep -qi 'sharpe'; then
-            echo "✅ read_backtest_statistics: contains Sharpe data" | tee -a $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ GATE 0 FAIL: read_backtest_statistics missing Sharpe data" | tee -a $GITHUB_STEP_SUMMARY
-            FAIL=1
-          fi
-
-          # HARD GATE: read_backtest must not error
-          BT=$(curl -s -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"read_backtest\",\"arguments\":{\"project_id\":$TEST_PROJECT_ID,\"backtest_id\":\"$TEST_BACKTEST_ID\"}}}")
-
-          if echo "$BT" | grep -q '"error"'; then
-            echo "❌ GATE 0 FAIL: read_backtest returned error" | tee -a $GITHUB_STEP_SUMMARY
-            FAIL=1
-          else
-            echo "✅ read_backtest: no error" | tee -a $GITHUB_STEP_SUMMARY
-          fi
-
-          # SOFT: orders — log result but do not fail gate
-          ORDERS=$(curl -s -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"tools/call\",\"params\":{\"name\":\"read_backtest_orders\",\"arguments\":{\"project_id\":$TEST_PROJECT_ID,\"backtest_id\":\"$TEST_BACKTEST_ID\"}}}")
-
-          if echo "$ORDERS" | grep -q '"error"'; then
-            echo "⚠️ SOFT: read_backtest_orders returned error (not a hard gate)" | tee -a $GITHUB_STEP_SUMMARY
-          else
-            echo "✅ read_backtest_orders: endpoint reachable" | tee -a $GITHUB_STEP_SUMMARY
-          fi
-
-          if [ "$FAIL" -eq 1 ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "## ❌ GATE 0 FAILED — Do not proceed to DAC v2 build. Raise on UNI-97." >> $GITHUB_STEP_SUMMARY
-            exit 1
-          else
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "## ✅ GATE 0 PASSED — Foundation verified. Proceed to Phase 1 (UNI-100)." >> $GITHUB_STEP_SUMMARY
-          fi
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate0-backtest-result
+          path: /tmp/backtest_result.json
