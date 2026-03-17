@@ -92,14 +92,85 @@ jobs:
           echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-      - name: Test 4 - list_backtests
+      - name: Test 4 - read_backtest_statistics
         run: |
-          echo "## Test 4: list_backtests" >> $GITHUB_STEP_SUMMARY
+          echo "## Test 4: read_backtest_statistics" >> $GITHUB_STEP_SUMMARY
           RESULT=$(curl -s -X POST http://localhost:8000/mcp/ \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_backtests","arguments":{"project_id":28779543}}}' \
+            -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_backtest_statistics","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
             2>&1)
           echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: Test 5 - read_backtest_logs
+        run: |
+          echo "## Test 5: read_backtest_logs" >> $GITHUB_STEP_SUMMARY
+          RESULT=$(curl -s -X POST http://localhost:8000/mcp/ \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -H "Mcp-Session-Id: $SESSION_ID" \
+            -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_backtest_logs","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
+            2>&1)
+          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: Test 6 - list_backtests
+        run: |
+          echo "## Test 6: list_backtests" >> $GITHUB_STEP_SUMMARY
+          RESULT=$(curl -s -X POST http://localhost:8000/mcp/ \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -H "Mcp-Session-Id: $SESSION_ID" \
+            -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_backtests","arguments":{"project_id":28779543}}}' \
+            2>&1)
+          echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: Gate 0 Hard Fail Check
+        run: |
+          echo "## Gate 0 Hard Fail Check" >> $GITHUB_STEP_SUMMARY
+          FAIL=0
+
+          # Check orders — must be non-empty array
+          ORDERS=$(curl -s -X POST http://localhost:8000/mcp/ \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -H "Mcp-Session-Id: $SESSION_ID" \
+            -d '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"read_backtest_orders","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee"}}}')
+
+          if echo "$ORDERS" | grep -q '"error"'; then
+            echo "❌ GATE 0 FAIL: read_backtest_orders returned error" | tee -a $GITHUB_STEP_SUMMARY
+            FAIL=1
+          elif echo "$ORDERS" | python3 -c "import sys,json; d=json.load(sys.stdin); orders=d.get('result',{}).get('content',[{}])[0].get('text','[]'); exit(0 if json.loads(orders) else 1)" 2>/tmp/orders_parse.txt; then
+            echo "✅ read_backtest_orders: non-empty" | tee -a $GITHUB_STEP_SUMMARY
+          else
+            PARSE_ERR=$(cat /tmp/orders_parse.txt 2>/dev/null)
+            [ -n "$PARSE_ERR" ] && echo "Parse error: $PARSE_ERR" | tee -a $GITHUB_STEP_SUMMARY
+            echo "❌ GATE 0 FAIL: read_backtest_orders returned empty array — architecture must be revised before proceeding" | tee -a $GITHUB_STEP_SUMMARY
+            FAIL=1
+          fi
+
+          # Check statistics — must contain SharpeRatio
+          STATS=$(curl -s -X POST http://localhost:8000/mcp/ \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -H "Mcp-Session-Id: $SESSION_ID" \
+            -d '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"read_backtest_statistics","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee"}}}')
+
+          if echo "$STATS" | grep -qi 'sharpe'; then
+            echo "✅ read_backtest_statistics: contains Sharpe data" | tee -a $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ GATE 0 FAIL: read_backtest_statistics missing Sharpe data" | tee -a $GITHUB_STEP_SUMMARY
+            FAIL=1
+          fi
+
+          if [ "$FAIL" -eq 1 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## ❌ GATE 0 FAILED — Do not proceed to DAC v2 build. Raise on UNI-97." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## ✅ GATE 0 PASSED — Foundation verified. Proceed to Phase 1 (UNI-100)." >> $GITHUB_STEP_SUMMARY
+          fi
