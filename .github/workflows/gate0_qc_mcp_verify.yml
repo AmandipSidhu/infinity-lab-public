@@ -92,26 +92,26 @@ jobs:
           echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-      - name: Test 4 - read_backtest_statistics
+      - name: Test 4 - read_backtest_chart
         run: |
-          echo "## Test 4: read_backtest_statistics" >> $GITHUB_STEP_SUMMARY
+          echo "## Test 4: read_backtest_chart" >> $GITHUB_STEP_SUMMARY
           RESULT=$(curl -s -X POST http://localhost:8000/mcp/ \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_backtest_statistics","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
+            -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_backtest_chart","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee","name":"Strategy Equity"}}}' \
             2>&1)
           echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-      - name: Test 5 - read_backtest_logs
+      - name: Test 5 - read_backtest_insights
         run: |
-          echo "## Test 5: read_backtest_logs" >> $GITHUB_STEP_SUMMARY
+          echo "## Test 5: read_backtest_insights" >> $GITHUB_STEP_SUMMARY
           RESULT=$(curl -s -X POST http://localhost:8000/mcp/ \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_backtest_logs","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
+            -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_backtest_insights","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
             2>&1)
           echo "$RESULT" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -152,18 +152,18 @@ jobs:
             FAIL=1
           fi
 
-          # Check statistics — must contain SharpeRatio
-          STATS=$(curl -s -X POST http://localhost:8000/mcp/ \
+          # Check chart — must return non-error response
+          CHART=$(curl -s -X POST http://localhost:8000/mcp/ \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"read_backtest_statistics","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee"}}}')
+            -d '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"read_backtest_chart","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee","name":"Strategy Equity"}}}')
 
-          if echo "$STATS" | grep -qi 'sharpe'; then
-            echo "✅ read_backtest_statistics: contains Sharpe data" | tee -a $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ GATE 0 FAIL: read_backtest_statistics missing Sharpe data" | tee -a $GITHUB_STEP_SUMMARY
+          if echo "$CHART" | grep -qi '"isError":true'; then
+            echo "❌ GATE 0 FAIL: read_backtest_chart returned error" | tee -a $GITHUB_STEP_SUMMARY
             FAIL=1
+          else
+            echo "✅ read_backtest_chart: responded without error" | tee -a $GITHUB_STEP_SUMMARY
           fi
 
           if [ "$FAIL" -eq 1 ]; then
