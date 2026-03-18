@@ -97,8 +97,8 @@ jobs:
           except json.JSONDecodeError as e:
               print(f"GATE 0 FAIL: Could not parse auth tool result JSON: {e}. Raw text: {text}")
               sys.exit(1)
-          if not tool_result.get("success", False):
-              print(f"GATE 0 FAIL: validate_quantconnect_auth did not return success=true. Got: {text}")
+          if not tool_result.get("authenticated", False):
+              print(f"GATE 0 FAIL: validate_quantconnect_auth returned authenticated=false. Got: {text}")
               sys.exit(1)
           print("Test 1 PASSED: QC auth validated successfully")
           EOF
@@ -238,8 +238,8 @@ jobs:
 
           try:
               auth = load_tool_result('/tmp/auth_response.json')
-              if not auth.get("success", False):
-                  failures.append(f"validate_quantconnect_auth did not return success=true. Got: {auth}")
+              if not auth.get("authenticated", False):
+                  failures.append(f"validate_quantconnect_auth returned authenticated=false. Got: {auth}")
           except Exception as e:
               failures.append(f"Failed to parse auth response: {e}")
 
