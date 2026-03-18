@@ -28,7 +28,7 @@ jobs:
           echo "Waiting for MCP server to be ready..."
           for i in $(seq 1 30); do
             HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 \
-              -X POST http://localhost:8000/mcp \
+              -X POST http://localhost:8000/mcp/ \
               -H 'Content-Type: application/json' \
               -H 'Accept: application/json, text/event-stream' \
               -d '{"jsonrpc":"2.0","id":-1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}' \
@@ -46,7 +46,7 @@ jobs:
 
       - name: MCP Initialize Handshake
         run: |
-          SESSION_ID=$(curl -s -S -D - -X POST http://localhost:8000/mcp \
+          SESSION_ID=$(curl -s -S -D - -X POST http://localhost:8000/mcp/ \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gate0","version":"1.0"}}}' \
@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "## Gate 0 Test 1: validate_quantconnect_auth" >> $GITHUB_STEP_SUMMARY
-          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp \
+          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp/ \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
@@ -106,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "## Gate 0 Test 2: read_backtest_orders" >> $GITHUB_STEP_SUMMARY
-          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp \
+          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp/ \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
@@ -155,7 +155,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "## Gate 0 Test 3: read_backtest" >> $GITHUB_STEP_SUMMARY
-          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp \
+          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp/ \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
