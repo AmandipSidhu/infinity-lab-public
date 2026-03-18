@@ -27,7 +27,7 @@ jobs:
           uvx quantconnect-mcp &
           echo "Waiting for MCP server to be ready..."
           for i in $(seq 1 30); do
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 \
+            if curl -s --fail-with-body --max-time 2 http://localhost:8000/mcp > /dev/null 2>&1; then
               -X POST http://localhost:8000/mcp \
               -H 'Content-Type: application/json' \
               -H 'Accept: application/json, text/event-stream' \
