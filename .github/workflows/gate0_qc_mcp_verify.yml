@@ -27,12 +27,18 @@ jobs:
           uvx quantconnect-mcp &
           echo "Waiting for MCP server to be ready..."
           for i in $(seq 1 30); do
-            if curl -s --max-time 2 http://localhost:8000/mcp > /dev/null 2>&1; then
-              echo "MCP server is ready after ${i}s"
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 \
+              -X POST http://localhost:8000/mcp \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json, text/event-stream' \
+              -d '{"jsonrpc":"2.0","id":-1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}' \
+              2>/dev/null || true)
+            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "201" ]; then
+              echo "MCP server is ready after ${i}s (HTTP $HTTP_STATUS)"
               break
             fi
             if [ "$i" -eq 30 ]; then
-              echo "❌ MCP server did not become ready within 30 seconds"
+              echo "❌ MCP server did not become ready within 30 seconds (last HTTP status: $HTTP_STATUS)"
               exit 1
             fi
             sleep 1
@@ -40,11 +46,11 @@ jobs:
 
       - name: MCP Initialize Handshake
         run: |
-          SESSION_ID=$(curl -s -D - -X POST http://localhost:8000/mcp \
+          SESSION_ID=$(curl -s -S -D - -X POST http://localhost:8000/mcp \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gate0","version":"1.0"}}}' \
-            | grep -i 'mcp-session-id' | awk '{print $2}' | tr -d '\r')
+            | grep -i '^mcp-session-id:' | head -1 | awk '{print $2}' | tr -d '\r')
           if [ -z "$SESSION_ID" ]; then
             echo "❌ GATE 0 FAIL: MCP initialize handshake did not return a Mcp-Session-Id header"
             exit 1
@@ -54,8 +60,9 @@ jobs:
 
       - name: Test 1 — validate_quantconnect_auth
         run: |
+          set -euo pipefail
           echo "## Gate 0 Test 1: validate_quantconnect_auth" >> $GITHUB_STEP_SUMMARY
-          RESPONSE=$(curl -s -X POST http://localhost:8000/mcp \
+          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
@@ -98,8 +105,9 @@ jobs:
 
       - name: Test 2 — read_backtest_orders
         run: |
+          set -euo pipefail
           echo "## Gate 0 Test 2: read_backtest_orders" >> $GITHUB_STEP_SUMMARY
-          RESPONSE=$(curl -s -X POST http://localhost:8000/mcp \
+          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
@@ -146,8 +154,9 @@ jobs:
 
       - name: Test 3 — read_backtest (Sharpe proof)
         run: |
+          set -euo pipefail
           echo "## Gate 0 Test 3: read_backtest" >> $GITHUB_STEP_SUMMARY
-          RESPONSE=$(curl -s -X POST http://localhost:8000/mcp \
+          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
@@ -197,6 +206,9 @@ jobs:
               result_stats = backtest.get("result", {})
               if isinstance(result_stats, dict):
                   sharpe = result_stats.get("SharpeRatio") or result_stats.get("Sharpe Ratio")
+          if sharpe is None:
+              print(f"❌ GATE 0 FAIL: read_backtest did not return a Sharpe ratio in the backtest object")
+              sys.exit(1)
           print(f"✅ Test 3 PASSED: read_backtest returned valid backtest object. Sharpe={sharpe}")
           EOF
 
@@ -219,6 +231,13 @@ jobs:
               return json.loads(text)
 
           failures = []
+
+          try:
+              auth = load_tool_result('/tmp/auth_response.json')
+              if not auth.get("success", False):
+                  failures.append(f"validate_quantconnect_auth did not return success=true. Got: {auth}")
+          except Exception as e:
+              failures.append(f"Failed to parse auth response: {e}")
 
           try:
               orders = load_tool_result('/tmp/orders_response.json')
@@ -245,6 +264,8 @@ jobs:
                   stats = backtest.get("Statistics", {})
                   if isinstance(stats, dict):
                       sharpe = stats.get("Sharpe Ratio") or stats.get("SharpeRatio")
+              if sharpe is None and backtest:
+                  failures.append("read_backtest did not return a Sharpe ratio in the backtest object")
           except Exception as e:
               failures.append(f"Failed to parse backtest response: {e}")
               backtest = None
