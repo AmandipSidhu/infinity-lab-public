@@ -27,18 +27,18 @@ jobs:
           uvx quantconnect-mcp &
           echo "Waiting for MCP server to be ready..."
           for i in $(seq 1 30); do
-            if curl -s --fail-with-body --max-time 2 http://localhost:8000/mcp > /dev/null 2>&1; then
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 \
               -X POST http://localhost:8000/mcp \
               -H 'Content-Type: application/json' \
               -H 'Accept: application/json, text/event-stream' \
               -d '{"jsonrpc":"2.0","id":-1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}' \
-              2>/dev/null || true)
+              2>/dev/null || echo "000")
             if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "201" ]; then
               echo "MCP server is ready after ${i}s (HTTP $HTTP_STATUS)"
               break
             fi
             if [ "$i" -eq 30 ]; then
-              echo "❌ MCP server did not become ready within 30 seconds (last HTTP status: $HTTP_STATUS)"
+              echo "MCP server did not become ready within 30 seconds (last HTTP status: $HTTP_STATUS)"
               exit 1
             fi
             sleep 1
@@ -52,7 +52,7 @@ jobs:
             -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gate0","version":"1.0"}}}' \
             | grep -i '^mcp-session-id:' | head -1 | awk '{print $2}' | tr -d '\r')
           if [ -z "$SESSION_ID" ]; then
-            echo "❌ GATE 0 FAIL: MCP initialize handshake did not return a Mcp-Session-Id header"
+            echo "GATE 0 FAIL: MCP initialize handshake did not return a Mcp-Session-Id header"
             exit 1
           fi
           echo "SESSION_ID=$SESSION_ID" >> $GITHUB_ENV
@@ -76,14 +76,13 @@ jobs:
           with open('/tmp/auth_response.json') as f:
               raw = f.read()
           print("Raw auth response:", raw)
-          # Extract content text from MCP tool response
           try:
               outer = json.loads(raw)
           except json.JSONDecodeError as e:
-              print(f"❌ GATE 0 FAIL: Could not parse auth response JSON: {e}")
+              print(f"GATE 0 FAIL: Could not parse auth response JSON: {e}")
               sys.exit(1)
           if "error" in outer:
-              print(f"❌ GATE 0 FAIL: Auth response contains error: {outer['error']}")
+              print(f"GATE 0 FAIL: Auth response contains error: {outer['error']}")
               sys.exit(1)
           result = outer.get("result", {})
           content = result.get("content", [])
@@ -95,12 +94,12 @@ jobs:
           try:
               tool_result = json.loads(text)
           except json.JSONDecodeError as e:
-              print(f"❌ GATE 0 FAIL: Could not parse auth tool result JSON: {e}. Raw text: {text}")
+              print(f"GATE 0 FAIL: Could not parse auth tool result JSON: {e}. Raw text: {text}")
               sys.exit(1)
           if not tool_result.get("success", False):
-              print(f"❌ GATE 0 FAIL: validate_quantconnect_auth did not return success=true. Got: {text}")
+              print(f"GATE 0 FAIL: validate_quantconnect_auth did not return success=true. Got: {text}")
               sys.exit(1)
-          print("✅ Test 1 PASSED: QC auth validated successfully")
+          print("Test 1 PASSED: QC auth validated successfully")
           EOF
 
       - name: Test 2 — read_backtest_orders
@@ -124,10 +123,10 @@ jobs:
           try:
               outer = json.loads(raw)
           except json.JSONDecodeError as e:
-              print(f"❌ GATE 0 FAIL: Could not parse orders response JSON: {e}")
+              print(f"GATE 0 FAIL: Could not parse orders response JSON: {e}")
               sys.exit(1)
           if "error" in outer:
-              print(f"❌ GATE 0 FAIL: Orders response contains error: {outer['error']}")
+              print(f"GATE 0 FAIL: Orders response contains error: {outer['error']}")
               sys.exit(1)
           result = outer.get("result", {})
           content = result.get("content", [])
@@ -139,17 +138,17 @@ jobs:
           try:
               tool_result = json.loads(text)
           except json.JSONDecodeError as e:
-              print(f"❌ GATE 0 FAIL: Could not parse orders tool result JSON: {e}")
+              print(f"GATE 0 FAIL: Could not parse orders tool result JSON: {e}")
               sys.exit(1)
           status = tool_result.get("status")
           length = tool_result.get("length", 0)
           if status != "success":
-              print(f"❌ GATE 0 FAIL: read_backtest_orders status={status!r}, expected 'success'")
+              print(f"GATE 0 FAIL: read_backtest_orders status={status!r}, expected 'success'")
               sys.exit(1)
           if length == 0:
-              print(f"❌ GATE 0 FAIL: read_backtest_orders returned length=0, expected >0")
+              print(f"GATE 0 FAIL: read_backtest_orders returned length=0, expected >0")
               sys.exit(1)
-          print(f"✅ Test 2 PASSED: read_backtest_orders length={length}")
+          print(f"Test 2 PASSED: read_backtest_orders length={length}")
           EOF
 
       - name: Test 3 — read_backtest (Sharpe proof)
@@ -173,10 +172,10 @@ jobs:
           try:
               outer = json.loads(raw)
           except json.JSONDecodeError as e:
-              print(f"❌ GATE 0 FAIL: Could not parse backtest response JSON: {e}")
+              print(f"GATE 0 FAIL: Could not parse backtest response JSON: {e}")
               sys.exit(1)
           if "error" in outer:
-              print(f"❌ GATE 0 FAIL: Backtest response contains error: {outer['error']}")
+              print(f"GATE 0 FAIL: Backtest response contains error: {outer['error']}")
               sys.exit(1)
           result = outer.get("result", {})
           content = result.get("content", [])
@@ -188,15 +187,15 @@ jobs:
           try:
               tool_result = json.loads(text)
           except json.JSONDecodeError as e:
-              print(f"❌ GATE 0 FAIL: Could not parse backtest tool result JSON: {e}")
+              print(f"GATE 0 FAIL: Could not parse backtest tool result JSON: {e}")
               sys.exit(1)
           status = tool_result.get("status")
           backtest = tool_result.get("backtest")
           if status != "success":
-              print(f"❌ GATE 0 FAIL: read_backtest status={status!r}, expected 'success'")
+              print(f"GATE 0 FAIL: read_backtest status={status!r}, expected 'success'")
               sys.exit(1)
           if not backtest:
-              print(f"❌ GATE 0 FAIL: read_backtest returned null/empty backtest object")
+              print(f"GATE 0 FAIL: read_backtest returned null/empty backtest object")
               sys.exit(1)
           sharpe = None
           stats = backtest.get("Statistics", {})
@@ -207,9 +206,9 @@ jobs:
               if isinstance(result_stats, dict):
                   sharpe = result_stats.get("SharpeRatio") or result_stats.get("Sharpe Ratio")
           if sharpe is None:
-              print(f"❌ GATE 0 FAIL: read_backtest did not return a Sharpe ratio in the backtest object")
+              print(f"GATE 0 FAIL: read_backtest did not return a Sharpe ratio in the backtest object")
               sys.exit(1)
-          print(f"✅ Test 3 PASSED: read_backtest returned valid backtest object. Sharpe={sharpe}")
+          print(f"Test 3 PASSED: read_backtest returned valid backtest object. Sharpe={sharpe}")
           EOF
 
       - name: Gate 0 Hard Fail Check
@@ -231,6 +230,8 @@ jobs:
               return json.loads(text)
 
           failures = []
+          orders_length = 0
+          sharpe = None
 
           try:
               auth = load_tool_result('/tmp/auth_response.json')
@@ -249,7 +250,6 @@ jobs:
                   failures.append("read_backtest_orders length=0, expected >0")
           except Exception as e:
               failures.append(f"Failed to parse orders response: {e}")
-              orders_length = 0
 
           try:
               backtest_result = load_tool_result('/tmp/backtest_response.json')
@@ -259,7 +259,6 @@ jobs:
                   failures.append(f"read_backtest status={backtest_status!r} != 'success'")
               if not backtest:
                   failures.append("read_backtest returned null/empty backtest object")
-              sharpe = None
               if backtest:
                   stats = backtest.get("Statistics", {})
                   if isinstance(stats, dict):
@@ -268,15 +267,13 @@ jobs:
                   failures.append("read_backtest did not return a Sharpe ratio in the backtest object")
           except Exception as e:
               failures.append(f"Failed to parse backtest response: {e}")
-              backtest = None
-              sharpe = None
 
           if failures:
               for msg in failures:
-                  print(f"❌ GATE 0 FAIL: {msg}")
+                  print(f"GATE 0 FAIL: {msg}")
               sys.exit(1)
 
-          print(f"✅ GATE 0 PASSED — orders_count={orders_length}, Sharpe={sharpe}")
+          print(f"GATE 0 PASSED -- orders_count={orders_length}, Sharpe={sharpe}")
           EOF
 
       - name: Upload response artifacts
