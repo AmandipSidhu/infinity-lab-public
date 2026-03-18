@@ -66,7 +66,8 @@ jobs:
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"validate_quantconnect_auth","arguments":{}}}')
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"validate_quantconnect_auth","arguments":{}}}' \
+            | grep '^data: ' | sed 's/^data: //')
           echo "$RESPONSE" | tee /tmp/auth_response.json
           echo '```json' >> $GITHUB_STEP_SUMMARY
           echo "$RESPONSE" >> $GITHUB_STEP_SUMMARY
@@ -110,7 +111,8 @@ jobs:
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_backtest_orders","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee","start":0,"end":100}}}')
+            -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_backtest_orders","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee","start":0,"end":100}}}' \
+            | grep '^data: ' | sed 's/^data: //')
           echo "$RESPONSE" | tee /tmp/orders_response.json
           echo '```json' >> $GITHUB_STEP_SUMMARY
           echo "$RESPONSE" >> $GITHUB_STEP_SUMMARY
@@ -159,7 +161,8 @@ jobs:
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_backtest","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee"}}}')
+            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_backtest","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
+            | grep '^data: ' | sed 's/^data: //')
           echo "$RESPONSE" | tee /tmp/backtest_response.json
           echo '```json' >> $GITHUB_STEP_SUMMARY
           echo "$RESPONSE" >> $GITHUB_STEP_SUMMARY
