@@ -66,6 +66,32 @@ If `lean backtest` exits non-zero, the step:
 
 ---
 
+## Path 3 — DAC v2 MCP Backtesting (taylorwilsdon/quantconnect-mcp)
+
+> **Added 2026-03-17. Source-verified from `taylorwilsdon/quantconnect-mcp` live source.**
+
+DAC v2 (`scripts/gemini_builder.py`) uses the `taylorwilsdon/quantconnect-mcp` server
+running in HTTP mode inside the GH Actions job. This is **not** the lean-cli path and
+**not** the QC REST API path — it is a third distinct integration.
+
+**Full reference:** `docs/QC_MCP_SERVER.md`
+
+### Key facts (do not guess — see QC_MCP_SERVER.md for full verified detail)
+
+- Server starts with: `MCP_TRANSPORT=streamable-http MCP_HOST=0.0.0.0 MCP_PORT=8000 uvx quantconnect-mcp`
+- Env vars the server reads: `QUANTCONNECT_USER_ID` and `QUANTCONNECT_API_TOKEN`
+- GitHub secrets are `QC_USER_ID` / `QC_API_TOKEN` — must be mapped in workflow env, not passed directly
+- Correct tools for backtest reads: `read_backtest`, `read_backtest_orders`, `read_backtest_chart`, `read_backtest_insights`
+- `read_backtest_statistics` and `read_backtest_logs` **do not exist** in this server
+- Sharpe ratio is returned by `read_backtest` inside the `backtest` object
+
+### Gate 0 workflow
+
+The CI proof that this path works end-to-end is `.github/workflows/gate0_qc_mcp_verify.yml`.
+Gate 0 is a hard prerequisite for DAC v2. See [UNI-100](https://linear.app/universaltrading/issue/UNI-100).
+
+---
+
 ## Typical end-to-end workflow
 
 ```
