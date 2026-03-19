@@ -15,6 +15,9 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install quantconnect-mcp
+        run: pip install quantconnect-mcp
+
       - name: Start QC MCP Server
         env:
           QUANTCONNECT_USER_ID: ${{ secrets.QC_USER_ID }}
@@ -23,265 +26,332 @@ jobs:
           MCP_HOST: 0.0.0.0
           MCP_PORT: "8000"
         run: |
-          pip install uv
-          uvx quantconnect-mcp &
+          quantconnect-mcp &
           echo "Waiting for MCP server to be ready..."
-          for i in $(seq 1 30); do
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 \
-              -X POST http://localhost:8000/mcp/ \
-              -H 'Content-Type: application/json' \
-              -H 'Accept: application/json, text/event-stream' \
-              -d '{"jsonrpc":"2.0","id":-1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}' \
-              2>/dev/null || echo "000")
-            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "201" ]; then
-              echo "MCP server is ready after ${i}s (HTTP $HTTP_STATUS)"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "MCP server did not become ready within 30 seconds (last HTTP status: $HTTP_STATUS)"
-              exit 1
-            fi
-            sleep 1
-          done
+          python3 - <<'PROBE'
+          import json
+          import sys
+          import time
+          import urllib.request
 
-      - name: MCP Initialize Handshake
-        run: |
-          SESSION_ID=$(curl -s -S -D - -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gate0","version":"1.0"}}}' \
-            | grep -i '^mcp-session-id:' | head -1 | awk '{print $2}' | tr -d '\r')
-          if [ -z "$SESSION_ID" ]; then
-            echo "GATE 0 FAIL: MCP initialize handshake did not return a Mcp-Session-Id header"
-            exit 1
-          fi
-          echo "SESSION_ID=$SESSION_ID" >> $GITHUB_ENV
-          echo "MCP session ID: $SESSION_ID"
+          url = "http://localhost:8000/mcp/"
+          payload = json.dumps({
+              "jsonrpc": "2.0", "id": -1, "method": "initialize",
+              "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                         "clientInfo": {"name": "probe", "version": "1.0"}}
+          }).encode()
+          last_exc = None
+          for i in range(1, 31):
+              try:
+                  req = urllib.request.Request(
+                      url, data=payload,
+                      headers={"Content-Type": "application/json",
+                               "Accept": "application/json, text/event-stream"},
+                      method="POST"
+                  )
+                  with urllib.request.urlopen(req, timeout=2) as r:
+                      if r.status in (200, 201):
+                          print(f"MCP server ready after {i}s (HTTP {r.status})")
+                          sys.exit(0)
+              except Exception as exc:
+                  last_exc = exc
+              if i == 30:
+                  print(f"GATE 0 FAIL: MCP server did not become ready within 30 seconds")
+                  if last_exc is not None:
+                      print(f"  Last error: {type(last_exc).__name__}: {last_exc}")
+                  sys.exit(1)
+              time.sleep(1)
+          PROBE
 
-      - name: Test 1 — validate_quantconnect_auth
+      - name: Gate 0 — All Five Criteria (Python urllib)
         run: |
-          set -euo pipefail
-          echo "## Gate 0 Test 1: validate_quantconnect_auth" >> $GITHUB_STEP_SUMMARY
-          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"validate_quantconnect_auth","arguments":{}}}' \
-            | grep '^data: ' | sed 's/^data: //')
-          echo "$RESPONSE" | tee /tmp/auth_response.json
-          echo '```json' >> $GITHUB_STEP_SUMMARY
-          echo "$RESPONSE" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          python3 <<'EOF'
-          import json, sys
-          with open('/tmp/auth_response.json') as f:
-              raw = f.read()
-          print("Raw auth response:", raw)
-          try:
-              outer = json.loads(raw)
-          except json.JSONDecodeError as e:
-              print(f"GATE 0 FAIL: Could not parse auth response JSON: {e}")
-              sys.exit(1)
-          if "error" in outer:
-              print(f"GATE 0 FAIL: Auth response contains error: {outer['error']}")
-              sys.exit(1)
-          result = outer.get("result", {})
-          content = result.get("content", [])
-          text = ""
-          for item in content:
-              if isinstance(item, dict) and item.get("type") == "text":
-                  text += item.get("text", "")
-          print("Auth tool text:", text)
-          try:
-              tool_result = json.loads(text)
-          except json.JSONDecodeError as e:
-              print(f"GATE 0 FAIL: Could not parse auth tool result JSON: {e}. Raw text: {text}")
-              sys.exit(1)
-          if not tool_result.get("authenticated", False):
-              print(f"GATE 0 FAIL: validate_quantconnect_auth returned authenticated=false. Got: {text}")
-              sys.exit(1)
-          print("Test 1 PASSED: QC auth validated successfully")
-          EOF
+          python3 << 'PYEOF'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.request
 
-      - name: Test 2 — read_backtest_orders
-        run: |
-          set -euo pipefail
-          echo "## Gate 0 Test 2: read_backtest_orders" >> $GITHUB_STEP_SUMMARY
-          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_backtest_orders","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee","start":0,"end":100}}}' \
-            | grep '^data: ' | sed 's/^data: //')
-          echo "$RESPONSE" | tee /tmp/orders_response.json
-          echo '```json' >> $GITHUB_STEP_SUMMARY
-          echo "$RESPONSE" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          python3 <<'EOF'
-          import json, sys
-          with open('/tmp/orders_response.json') as f:
-              raw = f.read()
-          print("Raw orders response:", raw)
-          try:
-              outer = json.loads(raw)
-          except json.JSONDecodeError as e:
-              print(f"GATE 0 FAIL: Could not parse orders response JSON: {e}")
-              sys.exit(1)
-          if "error" in outer:
-              print(f"GATE 0 FAIL: Orders response contains error: {outer['error']}")
-              sys.exit(1)
-          result = outer.get("result", {})
-          content = result.get("content", [])
-          text = ""
-          for item in content:
-              if isinstance(item, dict) and item.get("type") == "text":
-                  text += item.get("text", "")
-          print("Orders tool text:", text)
-          try:
-              tool_result = json.loads(text)
-          except json.JSONDecodeError as e:
-              print(f"GATE 0 FAIL: Could not parse orders tool result JSON: {e}")
-              sys.exit(1)
-          status = tool_result.get("status")
-          length = tool_result.get("length", 0)
-          if status != "success":
-              print(f"GATE 0 FAIL: read_backtest_orders status={status!r}, expected 'success'")
-              sys.exit(1)
-          if length == 0:
-              print(f"GATE 0 FAIL: read_backtest_orders returned length=0, expected >0")
-              sys.exit(1)
-          print(f"Test 2 PASSED: read_backtest_orders length={length}")
-          EOF
+          MCP_URL = "http://localhost:8000/mcp/"
+          BACKTEST_ID = "29a044c64e018d411830f0580ae25dee"
+          PROJECT_ID = 28779543
+          TIMING_LIMIT_S = 10.0
+          EXPECTED_SHARPE = 0.436
+          SHARPE_TOLERANCE = 0.05
 
-      - name: Test 3 — read_backtest (Sharpe proof)
-        run: |
-          set -euo pipefail
-          echo "## Gate 0 Test 3: read_backtest" >> $GITHUB_STEP_SUMMARY
-          RESPONSE=$(curl -s -S -X POST http://localhost:8000/mcp/ \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json, text/event-stream' \
-            -H "Mcp-Session-Id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_backtest","arguments":{"project_id":28779543,"backtest_id":"29a044c64e018d411830f0580ae25dee"}}}' \
-            | grep '^data: ' | sed 's/^data: //')
-          echo "$RESPONSE" | tee /tmp/backtest_response.json
-          echo '```json' >> $GITHUB_STEP_SUMMARY
-          echo "$RESPONSE" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          python3 <<'EOF'
-          import json, sys
-          with open('/tmp/backtest_response.json') as f:
-              raw = f.read()
-          print("Raw backtest response:", raw)
-          try:
-              outer = json.loads(raw)
-          except json.JSONDecodeError as e:
-              print(f"GATE 0 FAIL: Could not parse backtest response JSON: {e}")
+          STEP_SUMMARY = os.environ.get("GITHUB_STEP_SUMMARY", "")
+
+          # Wall-clock start for criteria 3+4 timing budget
+          t0 = None
+
+          def summary(text: str) -> None:
+              print(text)
+              if STEP_SUMMARY:
+                  with open(STEP_SUMMARY, "a") as fh:
+                      fh.write(text + "\n")
+
+          def mcp_post(payload: dict, session_id: str | None = None, timeout: float = 20.0) -> tuple[dict, str | None]:
+              body = json.dumps(payload).encode()
+              headers: dict[str, str] = {
+                  "Content-Type": "application/json",
+                  "Accept": "application/json, text/event-stream",
+              }
+              if session_id:
+                  headers["Mcp-Session-Id"] = session_id
+              req = urllib.request.Request(MCP_URL, data=body, headers=headers, method="POST")
+              with urllib.request.urlopen(req, timeout=timeout) as resp:
+                  raw = resp.read().decode()
+                  sid = resp.headers.get("Mcp-Session-Id")
+              for line in raw.splitlines():
+                  if line.startswith("data: "):
+                      return json.loads(line[6:]), sid
+              return json.loads(raw), sid
+
+          def remaining_budget() -> float:
+              """Seconds left in the timing budget for criteria 3+4."""
+              if t0 is None:
+                  return TIMING_LIMIT_S
+              return max(1.0, TIMING_LIMIT_S - (time.monotonic() - t0))
+
+          def tool_call(name: str, arguments: dict, session_id: str, req_id: int = 1) -> dict:
+              resp, _ = mcp_post(
+                  {"jsonrpc": "2.0", "id": req_id, "method": "tools/call",
+                   "params": {"name": name, "arguments": arguments}},
+                  session_id=session_id,
+                  timeout=remaining_budget(),
+              )
+              return resp
+
+          def extract_tool_text(response: dict) -> str:
+              content = response.get("result", {}).get("content", [])
+              return "".join(
+                  item.get("text", "")
+                  for item in content
+                  if isinstance(item, dict) and item.get("type") == "text"
+              )
+
+          def parse_tool_json(response: dict, label: str) -> dict:
+              if "error" in response:
+                  print(
+                      f"GATE 0 FAIL [{label}]: JSON-RPC error — "
+                      f"code={response['error'].get('code')} "
+                      f"message={response['error'].get('message')!r}"
+                  )
+                  sys.exit(1)
+              if "result" not in response:
+                  print(
+                      f"GATE 0 FAIL [{label}]: response has neither 'result' nor 'error'. "
+                      f"Full response: {response}"
+                  )
+                  sys.exit(1)
+              text = extract_tool_text(response)
+              try:
+                  return json.loads(text)
+              except json.JSONDecodeError as exc:
+                  print(f"GATE 0 FAIL [{label}]: result.content text is not valid JSON — {exc}")
+                  print(f"  raw text: {text!r}")
+                  sys.exit(1)
+
+          def find_sharpe(obj: dict) -> str | None:
+              for container in (
+                  obj,
+                  obj.get("Statistics") or {},
+                  obj.get("statistics") or {},
+                  obj.get("result") or {},
+                  (obj.get("result") or {}).get("Statistics") or {},
+                  (obj.get("result") or {}).get("statistics") or {},
+              ):
+                  if not isinstance(container, dict):
+                      continue
+                  for key in ("Sharpe Ratio", "SharpeRatio", "sharpeRatio", "sharpe_ratio"):
+                      val = container.get(key)
+                      if val is not None:
+                          return str(val)
+              return None
+
+          def find_total_orders(obj: dict) -> int:
+              for container in (
+                  obj.get("Statistics") or {},
+                  obj.get("statistics") or {},
+                  (obj.get("result") or {}).get("Statistics") or {},
+                  (obj.get("result") or {}).get("statistics") or {},
+              ):
+                  if not isinstance(container, dict):
+                      continue
+                  for key in ("Total Orders", "TotalOrders", "totalOrders"):
+                      val = container.get(key)
+                      if val is not None:
+                          try:
+                              return int(val)
+                          except (ValueError, TypeError):
+                              pass
+              return 0
+
+          summary("## Gate 0 — QC MCP Verification\n")
+
+          # ------------------------------------------------------------------ #
+          # Criterion 1: MCP starts in HTTP mode, returns session ID,           #
+          #              and initialize response body is not a JSON-RPC error   #
+          # ------------------------------------------------------------------ #
+          init_resp, session_id = mcp_post(
+              {
+                  "jsonrpc": "2.0", "id": 0, "method": "initialize",
+                  "params": {
+                      "protocolVersion": "2024-11-05",
+                      "capabilities": {},
+                      "clientInfo": {"name": "gate0", "version": "1.0"},
+                  },
+              }
+          )
+          if not session_id:
+              print("GATE 0 FAIL [criterion-1]: initialize did not return Mcp-Session-Id header")
               sys.exit(1)
-          if "error" in outer:
-              print(f"GATE 0 FAIL: Backtest response contains error: {outer['error']}")
+          if "error" in init_resp:
+              print(
+                  f"GATE 0 FAIL [criterion-1]: initialize returned JSON-RPC error — "
+                  f"code={init_resp['error'].get('code')} "
+                  f"message={init_resp['error'].get('message')!r}"
+              )
               sys.exit(1)
-          result = outer.get("result", {})
-          content = result.get("content", [])
-          text = ""
-          for item in content:
-              if isinstance(item, dict) and item.get("type") == "text":
-                  text += item.get("text", "")
-          print("Backtest tool text:", text)
-          try:
-              tool_result = json.loads(text)
-          except json.JSONDecodeError as e:
-              print(f"GATE 0 FAIL: Could not parse backtest tool result JSON: {e}")
+          if "result" not in init_resp:
+              print(
+                  f"GATE 0 FAIL [criterion-1]: initialize response has neither 'result' nor 'error'. "
+                  f"Full response: {init_resp}"
+              )
               sys.exit(1)
-          status = tool_result.get("status")
-          backtest = tool_result.get("backtest")
-          if status != "success":
-              print(f"GATE 0 FAIL: read_backtest status={status!r}, expected 'success'")
+          summary(f"✅ **Criterion 1 PASS** — MCP running in streamable-http mode (session={session_id})")
+
+          # ------------------------------------------------------------------ #
+          # Criterion 2: validate_quantconnect_auth returns authenticated=true  #
+          # ------------------------------------------------------------------ #
+          auth_resp = tool_call("validate_quantconnect_auth", {}, session_id, req_id=1)
+          auth_result = parse_tool_json(auth_resp, "validate_quantconnect_auth")
+          if not auth_result.get("authenticated", False):
+              print(f"GATE 0 FAIL [criterion-2]: authenticated=false — {auth_result}")
               sys.exit(1)
+          summary("✅ **Criterion 2 PASS** — validate_quantconnect_auth returned authenticated=true")
+
+          # ------------------------------------------------------------------ #
+          # Criteria 3 & 4 timed together (must complete in < 10 s)            #
+          # Each tool_call uses the remaining budget as its HTTP timeout so the #
+          # 10s wall-clock limit is enforced at the network layer, not just     #
+          # measured after the fact.                                            #
+          # ------------------------------------------------------------------ #
+          t0 = time.monotonic()
+
+          # Criterion 3: read_backtest returns Sharpe within ±0.05 of 0.436
+          bt_resp = tool_call(
+              "read_backtest",
+              {"project_id": PROJECT_ID, "backtest_id": BACKTEST_ID},
+              session_id, req_id=2,
+          )
+          bt_result = parse_tool_json(bt_resp, "read_backtest")
+          if bt_result.get("status") != "success":
+              print(
+                  f"GATE 0 FAIL [criterion-3]: read_backtest status={bt_result.get('status')!r} "
+                  f"error={bt_result.get('error')!r}"
+              )
+              sys.exit(1)
+
+          backtest = bt_result.get("backtest")
           if not backtest:
-              print(f"GATE 0 FAIL: read_backtest returned null/empty backtest object")
+              print("GATE 0 FAIL [criterion-3]: read_backtest returned empty backtest object")
               sys.exit(1)
-          sharpe = None
-          stats = backtest.get("Statistics", {})
-          if isinstance(stats, dict):
-              sharpe = stats.get("Sharpe Ratio") or stats.get("SharpeRatio")
-          if sharpe is None:
-              result_stats = backtest.get("result", {})
-              if isinstance(result_stats, dict):
-                  sharpe = result_stats.get("SharpeRatio") or result_stats.get("Sharpe Ratio")
-          if sharpe is None:
-              print(f"GATE 0 FAIL: read_backtest did not return a Sharpe ratio in the backtest object")
-              sys.exit(1)
-          print(f"Test 3 PASSED: read_backtest returned valid backtest object. Sharpe={sharpe}")
-          EOF
 
-      - name: Gate 0 Hard Fail Check
+          sharpe_str = find_sharpe(backtest)
+          if sharpe_str is None:
+              print(
+                  f"GATE 0 FAIL [criterion-3]: Sharpe Ratio not found in backtest. "
+                  f"Top-level keys: {list(backtest.keys())}"
+              )
+              sys.exit(1)
+
+          try:
+              sharpe_val = float(sharpe_str)
+          except (ValueError, TypeError):
+              print(f"GATE 0 FAIL [criterion-3]: Sharpe is not a valid float: {sharpe_str!r}")
+              sys.exit(1)
+
+          if abs(sharpe_val - EXPECTED_SHARPE) > SHARPE_TOLERANCE:
+              print(
+                  f"GATE 0 FAIL [criterion-3]: Sharpe={sharpe_val:.4f} outside expected "
+                  f"{EXPECTED_SHARPE} ± {SHARPE_TOLERANCE} "
+                  f"(deviation={abs(sharpe_val - EXPECTED_SHARPE):.4f}). "
+                  f"Wrong backtest or corrupted result."
+              )
+              sys.exit(1)
+
+          summary(f"✅ **Criterion 3 PASS** — Sharpe={sharpe_val:.4f} (expected {EXPECTED_SHARPE} ± {SHARPE_TOLERANCE})")
+
+          # Criterion 4: read_backtest_orders must return live raw order blobs.
+          # Hard fail if raw count = 0 — DAC v2 Phase 2 requires raw order data,
+          # not statistics. If this fails, replace BACKTEST_ID with a fresh
+          # backtest (< 10 days old) that still has raw order blobs retained by QC.
+          orders_resp = tool_call(
+              "read_backtest_orders",
+              {"project_id": PROJECT_ID, "backtest_id": BACKTEST_ID, "start": 0, "end": 100},
+              session_id, req_id=3,
+          )
+          orders_result = parse_tool_json(orders_resp, "read_backtest_orders")
+          if orders_result.get("status") != "success":
+              print(
+                  f"GATE 0 FAIL [criterion-4]: read_backtest_orders status={orders_result.get('status')!r} "
+                  f"error={orders_result.get('error')!r}"
+              )
+              sys.exit(1)
+
+          raw_order_count = orders_result.get("length", 0)
+          if raw_order_count == 0:
+              stats_order_count = find_total_orders(backtest)
+              print(
+                  f"GATE 0 FAIL [criterion-4]: read_backtest_orders.length=0 — "
+                  f"raw order blobs not available (QC data retention). "
+                  f"Statistics confirm {stats_order_count} orders ran. "
+                  f"ACTION: replace BACKTEST_ID with a fresh backtest (< 10 days old)."
+              )
+              sys.exit(1)
+
+          elapsed = time.monotonic() - t0
+          summary(
+              f"✅ **Criterion 4 PASS** — read_backtest_orders returned {raw_order_count} raw order blobs "
+              f"(live data confirmed — DAC v2 Phase 2 ready)"
+          )
+
+          # ------------------------------------------------------------------ #
+          # Criterion 5: criteria 3+4 complete in < 10 seconds                 #
+          # ------------------------------------------------------------------ #
+          if elapsed >= TIMING_LIMIT_S:
+              print(
+                  f"GATE 0 FAIL [criterion-5]: read_backtest + read_backtest_orders "
+                  f"took {elapsed:.2f}s — expected < {TIMING_LIMIT_S}s"
+              )
+              sys.exit(1)
+
+          summary(f"✅ **Criterion 5 PASS** — elapsed={elapsed:.2f}s < {TIMING_LIMIT_S}s")
+
+          summary("\n## 🎉 GATE 0 PASSED — All five criteria met\n")
+          summary("| Metric | Value |")
+          summary("|--------|-------|")
+          summary(f"| Sharpe | {sharpe_val:.4f} (expected {EXPECTED_SHARPE} ± {SHARPE_TOLERANCE}) |")
+          summary(f"| Raw order blobs | {raw_order_count} |")
+          summary(f"| Elapsed (criteria 3+4) | {elapsed:.2f}s |")
+          summary(f"| Session ID | {session_id} |")
+
+          PYEOF
+
+      - name: Copy step summary for artifact upload
+        if: always()
         run: |
-          echo "## Gate 0 Hard Fail Check" >> $GITHUB_STEP_SUMMARY
-          python3 <<'EOF'
-          import json, sys
+          if [ -n "$GITHUB_STEP_SUMMARY" ] && [ -f "$GITHUB_STEP_SUMMARY" ]; then
+            cp "$GITHUB_STEP_SUMMARY" /tmp/gate0_step_summary.md
+          else
+            echo "(no step summary generated)" > /tmp/gate0_step_summary.md
+          fi
 
-          def load_tool_result(filepath):
-              with open(filepath) as f:
-                  raw = f.read()
-              outer = json.loads(raw)
-              result = outer.get("result", {})
-              content = result.get("content", [])
-              text = ""
-              for item in content:
-                  if isinstance(item, dict) and item.get("type") == "text":
-                      text += item.get("text", "")
-              return json.loads(text)
-
-          failures = []
-          orders_length = 0
-          sharpe = None
-
-          try:
-              auth = load_tool_result('/tmp/auth_response.json')
-              if not auth.get("authenticated", False):
-                  failures.append(f"validate_quantconnect_auth returned authenticated=false. Got: {auth}")
-          except Exception as e:
-              failures.append(f"Failed to parse auth response: {e}")
-
-          try:
-              orders = load_tool_result('/tmp/orders_response.json')
-              orders_length = orders.get("length", 0)
-              orders_status = orders.get("status")
-              if orders_status != "success":
-                  failures.append(f"read_backtest_orders status={orders_status!r} != 'success'")
-              if orders_length == 0:
-                  failures.append("read_backtest_orders length=0, expected >0")
-          except Exception as e:
-              failures.append(f"Failed to parse orders response: {e}")
-
-          try:
-              backtest_result = load_tool_result('/tmp/backtest_response.json')
-              backtest_status = backtest_result.get("status")
-              backtest = backtest_result.get("backtest")
-              if backtest_status != "success":
-                  failures.append(f"read_backtest status={backtest_status!r} != 'success'")
-              if not backtest:
-                  failures.append("read_backtest returned null/empty backtest object")
-              if backtest:
-                  stats = backtest.get("Statistics", {})
-                  if isinstance(stats, dict):
-                      sharpe = stats.get("Sharpe Ratio") or stats.get("SharpeRatio")
-              if sharpe is None and backtest:
-                  failures.append("read_backtest did not return a Sharpe ratio in the backtest object")
-          except Exception as e:
-              failures.append(f"Failed to parse backtest response: {e}")
-
-          if failures:
-              for msg in failures:
-                  print(f"GATE 0 FAIL: {msg}")
-              sys.exit(1)
-
-          print(f"GATE 0 PASSED -- orders_count={orders_length}, Sharpe={sharpe}")
-          EOF
-
-      - name: Upload response artifacts
+      - name: Upload Gate 0 step summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gate0-mcp-responses
-          path: /tmp/*.json
+          name: gate0-step-summary
+          path: /tmp/gate0_step_summary.md
+          if-no-files-found: ignore
