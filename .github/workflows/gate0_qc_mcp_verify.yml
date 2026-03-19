@@ -3,6 +3,9 @@ name: GATE-0 QC MCP Verify
 on:
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   verify-qc-mcp:
     runs-on: ubuntu-latest
