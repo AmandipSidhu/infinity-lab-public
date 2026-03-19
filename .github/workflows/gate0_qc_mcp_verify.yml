@@ -60,6 +60,9 @@ jobs:
           BACKTEST_ID = "29a044c64e018d411830f0580ae25dee"
           PROJECT_ID = 28779543
           TIMING_LIMIT_S = 10.0
+          # Criterion 3: expected Sharpe ±tolerance
+          EXPECTED_SHARPE = 0.436
+          SHARPE_TOLERANCE = 0.05
 
           STEP_SUMMARY = os.environ.get("GITHUB_STEP_SUMMARY", "")
 
@@ -110,11 +113,26 @@ jobs:
               )
 
           def parse_tool_json(response: dict, label: str) -> dict:
+              """Extract and parse tool result JSON. Hard-fails on JSON-RPC error objects."""
+              # Guard: JSON-RPC level error (e.g. method not found, auth failure)
+              if "error" in response:
+                  print(
+                      f"GATE 0 FAIL [{label}]: JSON-RPC error — "
+                      f"code={response['error'].get('code')} "
+                      f"message={response['error'].get('message')!r}"
+                  )
+                  sys.exit(1)
+              if "result" not in response:
+                  print(
+                      f"GATE 0 FAIL [{label}]: response contains neither 'result' nor 'error'. "
+                      f"Full response: {response}"
+                  )
+                  sys.exit(1)
               text = extract_tool_text(response)
               try:
                   return json.loads(text)
               except json.JSONDecodeError as exc:
-                  print(f"GATE 0 FAIL [{label}]: response not valid JSON — {exc}")
+                  print(f"GATE 0 FAIL [{label}]: result.content text is not valid JSON — {exc}")
                   print(f"  raw text: {text!r}")
                   sys.exit(1)
 
@@ -192,7 +210,7 @@ jobs:
           # ------------------------------------------------------------------ #
           t0 = time.monotonic()
 
-          # Criterion 3: read_backtest returns Sharpe ~0.436
+          # Criterion 3: read_backtest returns Sharpe within tolerance of 0.436
           bt_resp = tool_call(
               "read_backtest",
               {"project_id": PROJECT_ID, "backtest_id": BACKTEST_ID},
@@ -229,12 +247,24 @@ jobs:
               print(f"GATE 0 FAIL [criterion-3]: Sharpe Ratio is not a valid number: {sharpe_str!r}")
               sys.exit(1)
 
-          summary(f"✅ **Criterion 3 PASS** — read_backtest Sharpe={sharpe_str}")
+          if abs(sharpe_val - EXPECTED_SHARPE) > SHARPE_TOLERANCE:
+              print(
+                  f"GATE 0 FAIL [criterion-3]: Sharpe={sharpe_val:.4f} is outside expected range "
+                  f"{EXPECTED_SHARPE} ± {SHARPE_TOLERANCE} "
+                  f"(got {abs(sharpe_val - EXPECTED_SHARPE):.4f} deviation). "
+                  f"Wrong backtest returned or result corrupted."
+              )
+              sys.exit(1)
 
-          # Criterion 4: read_backtest_orders returns non-empty orders
-          # QC may clear raw order data after ~10 days while keeping statistics.
-          # Primary: check read_backtest_orders.length > 0.
-          # Fallback: verify via read_backtest statistics["Total Orders"] > 0.
+          summary(f"✅ **Criterion 3 PASS** — Sharpe={sharpe_val:.4f} (expected {EXPECTED_SHARPE} ± {SHARPE_TOLERANCE})")
+
+          # ------------------------------------------------------------------ #
+          # Criterion 4: read_backtest_orders returns LIVE raw order blobs      #
+          # DAC v2 Phase 2 requires raw order data — statistics fallback is     #
+          # not sufficient. Hard fail if raw orders are empty.                  #
+          # If QC has purged the reference backtest's raw data, replace         #
+          # BACKTEST_ID with a fresh backtest (< 10 days old).                 #
+          # ------------------------------------------------------------------ #
           orders_resp = tool_call(
               "read_backtest_orders",
               {
@@ -256,26 +286,21 @@ jobs:
 
           raw_order_count = orders_result.get("length", 0)
           stats_order_count = find_total_orders(backtest)
-          effective_order_count = raw_order_count if raw_order_count > 0 else stats_order_count
 
-          if effective_order_count == 0:
+          if raw_order_count == 0:
               print(
-                  f"GATE 0 FAIL [criterion-4]: No orders found — "
-                  f"read_backtest_orders.length={raw_order_count}, "
-                  f"backtest statistics Total Orders={stats_order_count}"
+                  f"GATE 0 FAIL [criterion-4]: read_backtest_orders.length=0 — "
+                  f"raw order blobs not available (QC data retention likely). "
+                  f"Statistics show {stats_order_count} orders exist. "
+                  f"ACTION REQUIRED: replace BACKTEST_ID with a fresh backtest (< 10 days old) "
+                  f"so DAC v2 Phase 2 deep-read is verified against live order data."
               )
               sys.exit(1)
 
-          order_source = "read_backtest_orders" if raw_order_count > 0 else "backtest statistics"
-          if raw_order_count == 0 and stats_order_count > 0:
-              summary(
-                  f"  ⚠️  read_backtest_orders.length=0 (QC data retention); "
-                  f"orders confirmed via backtest statistics: {stats_order_count}"
-              )
-
           elapsed = time.monotonic() - t0
           summary(
-              f"✅ **Criterion 4 PASS** — orders={effective_order_count} (source: {order_source})"
+              f"✅ **Criterion 4 PASS** — read_backtest_orders returned {raw_order_count} raw order blobs "
+              f"(live data confirmed, DAC v2 Phase 2 ready)"
           )
 
           # ------------------------------------------------------------------ #
@@ -296,16 +321,17 @@ jobs:
           summary("\n## 🎉 GATE 0 PASSED — All five criteria met\n")
           summary("| Metric | Value |")
           summary("|--------|-------|")
-          summary(f"| Sharpe | {sharpe_val} |")
-          summary(f"| Order count | {effective_order_count} (source: {order_source}) |")
+          summary(f"| Sharpe | {sharpe_val:.4f} (expected {EXPECTED_SHARPE} ± {SHARPE_TOLERANCE}) |")
+          summary(f"| Raw order blobs | {raw_order_count} |")
           summary(f"| Elapsed (criteria 3+4) | {elapsed:.2f}s |")
           summary(f"| Session ID | {session_id} |")
 
           PYEOF
 
-      - name: Upload response artifacts
+      - name: Upload Gate 0 step summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gate0-mcp-responses
-          path: /tmp/*.json
+          name: gate0-step-summary
+          path: ${{ runner.temp }}/_github_workflow/step_summary.md
+          if-no-files-found: ignore
