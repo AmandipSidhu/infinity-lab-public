@@ -28,23 +28,37 @@ jobs:
         run: |
           quantconnect-mcp &
           echo "Waiting for MCP server to be ready..."
-          for i in $(seq 1 30); do
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 \
-              -X POST http://localhost:8000/mcp/ \
-              -H 'Content-Type: application/json' \
-              -H 'Accept: application/json, text/event-stream' \
-              -d '{"jsonrpc":"2.0","id":-1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}' \
-              2>/dev/null || echo "000")
-            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "201" ]; then
-              echo "MCP server is ready after ${i}s (HTTP $HTTP_STATUS)"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "GATE 0 FAIL: MCP server did not become ready within 30 seconds (last HTTP status: $HTTP_STATUS)"
-              exit 1
-            fi
-            sleep 1
-          done
+          python3 - <<'PROBE'
+          import json
+          import sys
+          import time
+          import urllib.request
+
+          url = "http://localhost:8000/mcp/"
+          payload = json.dumps({
+              "jsonrpc": "2.0", "id": -1, "method": "initialize",
+              "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                         "clientInfo": {"name": "probe", "version": "1.0"}}
+          }).encode()
+          for i in range(1, 31):
+              try:
+                  req = urllib.request.Request(
+                      url, data=payload,
+                      headers={"Content-Type": "application/json",
+                               "Accept": "application/json, text/event-stream"},
+                      method="POST"
+                  )
+                  with urllib.request.urlopen(req, timeout=2) as r:
+                      if r.status in (200, 201):
+                          print(f"MCP server ready after {i}s (HTTP {r.status})")
+                          sys.exit(0)
+              except Exception:
+                  pass
+              if i == 30:
+                  print("GATE 0 FAIL: MCP server did not become ready within 30 seconds")
+                  sys.exit(1)
+              time.sleep(1)
+          PROBE
 
       - name: Gate 0 — All Five Criteria (Python urllib)
         run: |
@@ -53,14 +67,12 @@ jobs:
           import os
           import sys
           import time
-          import urllib.error
           import urllib.request
 
           MCP_URL = "http://localhost:8000/mcp/"
           BACKTEST_ID = "29a044c64e018d411830f0580ae25dee"
           PROJECT_ID = 28779543
           TIMING_LIMIT_S = 10.0
-          # Criterion 3: expected Sharpe ±tolerance
           EXPECTED_SHARPE = 0.436
           SHARPE_TOLERANCE = 0.05
 
@@ -73,7 +85,6 @@ jobs:
                       fh.write(text + "\n")
 
           def mcp_post(payload: dict, session_id: str | None = None) -> tuple[dict, str | None]:
-              """POST a JSON-RPC payload; return (parsed_response, session_id_from_header)."""
               body = json.dumps(payload).encode()
               headers: dict[str, str] = {
                   "Content-Type": "application/json",
@@ -90,16 +101,10 @@ jobs:
                       return json.loads(line[6:]), sid
               return json.loads(raw), sid
 
-          def tool_call(
-              name: str, arguments: dict, session_id: str, req_id: int = 1
-          ) -> dict:
+          def tool_call(name: str, arguments: dict, session_id: str, req_id: int = 1) -> dict:
               resp, _ = mcp_post(
-                  {
-                      "jsonrpc": "2.0",
-                      "id": req_id,
-                      "method": "tools/call",
-                      "params": {"name": name, "arguments": arguments},
-                  },
+                  {"jsonrpc": "2.0", "id": req_id, "method": "tools/call",
+                   "params": {"name": name, "arguments": arguments}},
                   session_id=session_id,
               )
               return resp
@@ -113,8 +118,6 @@ jobs:
               )
 
           def parse_tool_json(response: dict, label: str) -> dict:
-              """Extract and parse tool result JSON. Hard-fails on JSON-RPC error objects."""
-              # Guard: JSON-RPC level error (e.g. method not found, auth failure)
               if "error" in response:
                   print(
                       f"GATE 0 FAIL [{label}]: JSON-RPC error — "
@@ -124,7 +127,7 @@ jobs:
                   sys.exit(1)
               if "result" not in response:
                   print(
-                      f"GATE 0 FAIL [{label}]: response contains neither 'result' nor 'error'. "
+                      f"GATE 0 FAIL [{label}]: response has neither 'result' nor 'error'. "
                       f"Full response: {response}"
                   )
                   sys.exit(1)
@@ -137,7 +140,6 @@ jobs:
                   sys.exit(1)
 
           def find_sharpe(obj: dict) -> str | None:
-              """Search common locations in the backtest object for Sharpe Ratio."""
               for container in (
                   obj,
                   obj.get("Statistics") or {},
@@ -155,7 +157,6 @@ jobs:
               return None
 
           def find_total_orders(obj: dict) -> int:
-              """Extract Total Orders count from statistics."""
               for container in (
                   obj.get("Statistics") or {},
                   obj.get("statistics") or {},
@@ -176,13 +177,12 @@ jobs:
           summary("## Gate 0 — QC MCP Verification\n")
 
           # ------------------------------------------------------------------ #
-          # Criterion 1: MCP starts in HTTP mode and returns a session ID       #
+          # Criterion 1: MCP starts in HTTP mode, returns session ID,           #
+          #              and initialize response body is not a JSON-RPC error   #
           # ------------------------------------------------------------------ #
           init_resp, session_id = mcp_post(
               {
-                  "jsonrpc": "2.0",
-                  "id": 0,
-                  "method": "initialize",
+                  "jsonrpc": "2.0", "id": 0, "method": "initialize",
                   "params": {
                       "protocolVersion": "2024-11-05",
                       "capabilities": {},
@@ -193,10 +193,23 @@ jobs:
           if not session_id:
               print("GATE 0 FAIL [criterion-1]: initialize did not return Mcp-Session-Id header")
               sys.exit(1)
+          if "error" in init_resp:
+              print(
+                  f"GATE 0 FAIL [criterion-1]: initialize returned JSON-RPC error — "
+                  f"code={init_resp['error'].get('code')} "
+                  f"message={init_resp['error'].get('message')!r}"
+              )
+              sys.exit(1)
+          if "result" not in init_resp:
+              print(
+                  f"GATE 0 FAIL [criterion-1]: initialize response has neither 'result' nor 'error'. "
+                  f"Full response: {init_resp}"
+              )
+              sys.exit(1)
           summary(f"✅ **Criterion 1 PASS** — MCP running in streamable-http mode (session={session_id})")
 
           # ------------------------------------------------------------------ #
-          # Criterion 2: validate_quantconnect_auth returns success             #
+          # Criterion 2: validate_quantconnect_auth returns authenticated=true  #
           # ------------------------------------------------------------------ #
           auth_resp = tool_call("validate_quantconnect_auth", {}, session_id, req_id=1)
           auth_result = parse_tool_json(auth_resp, "validate_quantconnect_auth")
@@ -206,16 +219,15 @@ jobs:
           summary("✅ **Criterion 2 PASS** — validate_quantconnect_auth returned authenticated=true")
 
           # ------------------------------------------------------------------ #
-          # Criteria 3 & 4 — timed together (must complete in < 10 s)          #
+          # Criteria 3 & 4 timed together (must complete in < 10 s)            #
           # ------------------------------------------------------------------ #
           t0 = time.monotonic()
 
-          # Criterion 3: read_backtest returns Sharpe within tolerance of 0.436
+          # Criterion 3: read_backtest returns Sharpe within ±0.05 of 0.436
           bt_resp = tool_call(
               "read_backtest",
               {"project_id": PROJECT_ID, "backtest_id": BACKTEST_ID},
-              session_id,
-              req_id=2,
+              session_id, req_id=2,
           )
           bt_result = parse_tool_json(bt_resp, "read_backtest")
           if bt_result.get("status") != "success":
@@ -241,40 +253,28 @@ jobs:
           try:
               sharpe_val = float(sharpe_str)
           except (ValueError, TypeError):
-              sharpe_val = None
-
-          if sharpe_val is None:
-              print(f"GATE 0 FAIL [criterion-3]: Sharpe Ratio is not a valid number: {sharpe_str!r}")
+              print(f"GATE 0 FAIL [criterion-3]: Sharpe is not a valid float: {sharpe_str!r}")
               sys.exit(1)
 
           if abs(sharpe_val - EXPECTED_SHARPE) > SHARPE_TOLERANCE:
               print(
-                  f"GATE 0 FAIL [criterion-3]: Sharpe={sharpe_val:.4f} is outside expected range "
+                  f"GATE 0 FAIL [criterion-3]: Sharpe={sharpe_val:.4f} outside expected "
                   f"{EXPECTED_SHARPE} ± {SHARPE_TOLERANCE} "
-                  f"(got {abs(sharpe_val - EXPECTED_SHARPE):.4f} deviation). "
-                  f"Wrong backtest returned or result corrupted."
+                  f"(deviation={abs(sharpe_val - EXPECTED_SHARPE):.4f}). "
+                  f"Wrong backtest or corrupted result."
               )
               sys.exit(1)
 
           summary(f"✅ **Criterion 3 PASS** — Sharpe={sharpe_val:.4f} (expected {EXPECTED_SHARPE} ± {SHARPE_TOLERANCE})")
 
-          # ------------------------------------------------------------------ #
-          # Criterion 4: read_backtest_orders returns LIVE raw order blobs      #
-          # DAC v2 Phase 2 requires raw order data — statistics fallback is     #
-          # not sufficient. Hard fail if raw orders are empty.                  #
-          # If QC has purged the reference backtest's raw data, replace         #
-          # BACKTEST_ID with a fresh backtest (< 10 days old).                 #
-          # ------------------------------------------------------------------ #
+          # Criterion 4: read_backtest_orders returns live raw order blobs
+          # Hard fail if raw count = 0 — statistics fallback is NOT sufficient
+          # for DAC v2 Phase 2. If this fails, replace BACKTEST_ID with a
+          # fresh backtest (< 10 days old) that still has raw order blobs.
           orders_resp = tool_call(
               "read_backtest_orders",
-              {
-                  "project_id": PROJECT_ID,
-                  "backtest_id": BACKTEST_ID,
-                  "start": 0,
-                  "end": 100,
-              },
-              session_id,
-              req_id=3,
+              {"project_id": PROJECT_ID, "backtest_id": BACKTEST_ID, "start": 0, "end": 100},
+              session_id, req_id=3,
           )
           orders_result = parse_tool_json(orders_resp, "read_backtest_orders")
           if orders_result.get("status") != "success":
@@ -285,26 +285,24 @@ jobs:
               sys.exit(1)
 
           raw_order_count = orders_result.get("length", 0)
-          stats_order_count = find_total_orders(backtest)
-
           if raw_order_count == 0:
+              stats_order_count = find_total_orders(backtest)
               print(
                   f"GATE 0 FAIL [criterion-4]: read_backtest_orders.length=0 — "
-                  f"raw order blobs not available (QC data retention likely). "
-                  f"Statistics show {stats_order_count} orders exist. "
-                  f"ACTION REQUIRED: replace BACKTEST_ID with a fresh backtest (< 10 days old) "
-                  f"so DAC v2 Phase 2 deep-read is verified against live order data."
+                  f"raw order blobs not available (QC data retention). "
+                  f"Statistics confirm {stats_order_count} orders ran. "
+                  f"ACTION: replace BACKTEST_ID with a fresh backtest (< 10 days old)."
               )
               sys.exit(1)
 
           elapsed = time.monotonic() - t0
           summary(
               f"✅ **Criterion 4 PASS** — read_backtest_orders returned {raw_order_count} raw order blobs "
-              f"(live data confirmed, DAC v2 Phase 2 ready)"
+              f"(live data confirmed — DAC v2 Phase 2 ready)"
           )
 
           # ------------------------------------------------------------------ #
-          # Criterion 5: both calls complete in < 10 seconds                    #
+          # Criterion 5: criteria 3+4 complete in < 10 seconds                 #
           # ------------------------------------------------------------------ #
           if elapsed >= TIMING_LIMIT_S:
               print(
@@ -315,9 +313,6 @@ jobs:
 
           summary(f"✅ **Criterion 5 PASS** — elapsed={elapsed:.2f}s < {TIMING_LIMIT_S}s")
 
-          # ------------------------------------------------------------------ #
-          # Summary table                                                        #
-          # ------------------------------------------------------------------ #
           summary("\n## 🎉 GATE 0 PASSED — All five criteria met\n")
           summary("| Metric | Value |")
           summary("|--------|-------|")
@@ -328,10 +323,19 @@ jobs:
 
           PYEOF
 
+      - name: Copy step summary for artifact upload
+        if: always()
+        run: |
+          if [ -n "$GITHUB_STEP_SUMMARY" ] && [ -f "$GITHUB_STEP_SUMMARY" ]; then
+            cp "$GITHUB_STEP_SUMMARY" /tmp/gate0_step_summary.md
+          else
+            echo "(no step summary generated)" > /tmp/gate0_step_summary.md
+          fi
+
       - name: Upload Gate 0 step summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gate0-step-summary
-          path: ${{ runner.temp }}/_github_workflow/step_summary.md
+          path: /tmp/gate0_step_summary.md
           if-no-files-found: ignore
