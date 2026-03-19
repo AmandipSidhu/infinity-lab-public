@@ -40,6 +40,7 @@ jobs:
               "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                          "clientInfo": {"name": "probe", "version": "1.0"}}
           }).encode()
+          last_exc = None
           for i in range(1, 31):
               try:
                   req = urllib.request.Request(
@@ -52,10 +53,12 @@ jobs:
                       if r.status in (200, 201):
                           print(f"MCP server ready after {i}s (HTTP {r.status})")
                           sys.exit(0)
-              except Exception:
-                  pass
+              except Exception as exc:
+                  last_exc = exc
               if i == 30:
-                  print("GATE 0 FAIL: MCP server did not become ready within 30 seconds")
+                  print(f"GATE 0 FAIL: MCP server did not become ready within 30 seconds")
+                  if last_exc is not None:
+                      print(f"  Last error: {type(last_exc).__name__}: {last_exc}")
                   sys.exit(1)
               time.sleep(1)
           PROBE
@@ -78,13 +81,16 @@ jobs:
 
           STEP_SUMMARY = os.environ.get("GITHUB_STEP_SUMMARY", "")
 
+          # Wall-clock start for criteria 3+4 timing budget
+          t0 = None
+
           def summary(text: str) -> None:
               print(text)
               if STEP_SUMMARY:
                   with open(STEP_SUMMARY, "a") as fh:
                       fh.write(text + "\n")
 
-          def mcp_post(payload: dict, session_id: str | None = None) -> tuple[dict, str | None]:
+          def mcp_post(payload: dict, session_id: str | None = None, timeout: float = 20.0) -> tuple[dict, str | None]:
               body = json.dumps(payload).encode()
               headers: dict[str, str] = {
                   "Content-Type": "application/json",
@@ -93,7 +99,7 @@ jobs:
               if session_id:
                   headers["Mcp-Session-Id"] = session_id
               req = urllib.request.Request(MCP_URL, data=body, headers=headers, method="POST")
-              with urllib.request.urlopen(req, timeout=20) as resp:
+              with urllib.request.urlopen(req, timeout=timeout) as resp:
                   raw = resp.read().decode()
                   sid = resp.headers.get("Mcp-Session-Id")
               for line in raw.splitlines():
@@ -101,11 +107,18 @@ jobs:
                       return json.loads(line[6:]), sid
               return json.loads(raw), sid
 
+          def remaining_budget() -> float:
+              """Seconds left in the timing budget for criteria 3+4."""
+              if t0 is None:
+                  return TIMING_LIMIT_S
+              return max(1.0, TIMING_LIMIT_S - (time.monotonic() - t0))
+
           def tool_call(name: str, arguments: dict, session_id: str, req_id: int = 1) -> dict:
               resp, _ = mcp_post(
                   {"jsonrpc": "2.0", "id": req_id, "method": "tools/call",
                    "params": {"name": name, "arguments": arguments}},
                   session_id=session_id,
+                  timeout=remaining_budget(),
               )
               return resp
 
@@ -220,6 +233,9 @@ jobs:
 
           # ------------------------------------------------------------------ #
           # Criteria 3 & 4 timed together (must complete in < 10 s)            #
+          # Each tool_call uses the remaining budget as its HTTP timeout so the #
+          # 10s wall-clock limit is enforced at the network layer, not just     #
+          # measured after the fact.                                            #
           # ------------------------------------------------------------------ #
           t0 = time.monotonic()
 
@@ -267,10 +283,10 @@ jobs:
 
           summary(f"✅ **Criterion 3 PASS** — Sharpe={sharpe_val:.4f} (expected {EXPECTED_SHARPE} ± {SHARPE_TOLERANCE})")
 
-          # Criterion 4: read_backtest_orders returns live raw order blobs
-          # Hard fail if raw count = 0 — statistics fallback is NOT sufficient
-          # for DAC v2 Phase 2. If this fails, replace BACKTEST_ID with a
-          # fresh backtest (< 10 days old) that still has raw order blobs.
+          # Criterion 4: read_backtest_orders must return live raw order blobs.
+          # Hard fail if raw count = 0 — DAC v2 Phase 2 requires raw order data,
+          # not statistics. If this fails, replace BACKTEST_ID with a fresh
+          # backtest (< 10 days old) that still has raw order blobs retained by QC.
           orders_resp = tool_call(
               "read_backtest_orders",
               {"project_id": PROJECT_ID, "backtest_id": BACKTEST_ID, "start": 0, "end": 100},
