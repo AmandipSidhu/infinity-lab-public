@@ -73,10 +73,11 @@ jobs:
           import urllib.request
 
           MCP_URL = "http://localhost:8000/mcp/"
-          BACKTEST_ID = "29a044c64e018d411830f0580ae25dee"
-          PROJECT_ID = 28779543
+          # DAK2 — Casual Apricot Mosquito (2022-01-01 to 2023-12-31)
+          BACKTEST_ID = "48d60f1bc64cb6f3348825b80a14f557"
+          PROJECT_ID = 29178426
           TIMING_LIMIT_S = 10.0
-          EXPECTED_SHARPE = 0.436
+          EXPECTED_SHARPE = -0.869
           SHARPE_TOLERANCE = 0.05
 
           STEP_SUMMARY = os.environ.get("GITHUB_STEP_SUMMARY", "")
@@ -239,7 +240,7 @@ jobs:
           # ------------------------------------------------------------------ #
           t0 = time.monotonic()
 
-          # Criterion 3: read_backtest returns Sharpe within ±0.05 of 0.436
+          # Criterion 3: read_backtest returns Sharpe within ±0.05 of -0.869
           bt_resp = tool_call(
               "read_backtest",
               {"project_id": PROJECT_ID, "backtest_id": BACKTEST_ID},
