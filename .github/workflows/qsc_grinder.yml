@@ -81,7 +81,7 @@ jobs:
             echo "SLACK_WEBHOOK not set — skipping notification"
             exit 0
           fi
-          MSG="🚀 QSC Grinder started — parsing prompt queue\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG=$'🚀 QSC Grinder started — parsing prompt queue\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
           jq -n --arg text "$MSG" '{"text": $text}' | \
             curl -s -X POST "${SLACK_WEBHOOK}" \
               -H 'Content-type: application/json' \
@@ -213,7 +213,7 @@ jobs:
           AIDER="${{ steps.aider.outcome }}"
           VALIDATE="${{ steps.validate.outcome }}"
           QC="${{ steps.qc.outcome }}"
-          if [ "$AIDER" = "success" ] && [ "$VALIDATE" = "success" ]; then
+          if [ "$AIDER" = "success" ] && [ "$VALIDATE" = "success" ] && [ "$QC" = "success" ]; then
             ICON="✅"
           else
             ICON="❌"
@@ -334,7 +334,7 @@ jobs:
           AIDER="${{ steps.aider.outcome }}"
           VALIDATE="${{ steps.validate.outcome }}"
           QC="${{ steps.qc.outcome }}"
-          if [ "$AIDER" = "success" ] && [ "$VALIDATE" = "success" ]; then
+          if [ "$AIDER" = "success" ] && [ "$VALIDATE" = "success" ] && [ "$QC" = "success" ]; then
             ICON="✅"
           else
             ICON="❌"
