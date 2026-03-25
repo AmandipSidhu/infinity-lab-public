@@ -1,10 +1,16 @@
 name: QSC Grinder
+# MODEL LOCK: QSC uses exclusively Gemini Flash (gemini/gemini-2.5-flash).
+# No other LLM provider (Claude, GPT, OpenAI, DeepSeek, etc.) is used or permitted.
+# The only external secrets required are GEMINI_API_KEY, QC_USER_ID, and QC_API_TOKEN.
 
 on:
   push:
     paths:
       - 'prompts/**'
   workflow_dispatch:
+
+env:
+  AIDER_MODEL: gemini/gemini-2.5-flash  # Single source of truth — do not change to another provider
 
 concurrency:
   group: qsc-grinder-${{ github.ref }}
@@ -139,7 +145,7 @@ jobs:
           PROMPT_CONTENT: ${{ matrix.prompt.content }}
         run: |
           aider \
-            --model gemini/gemini-2.5-flash \
+            --model "$AIDER_MODEL" \
             --read config/qc_api_reference.txt \
             --read config/aider_system_prompt_qsc.txt \
             --yes --no-git \
@@ -236,7 +242,7 @@ jobs:
           PROMPT_CONTENT: ${{ matrix.prompt.content }}
         run: |
           aider \
-            --model gemini/gemini-2.5-flash \
+            --model "$AIDER_MODEL" \
             --read config/qc_api_reference.txt \
             --read config/aider_system_prompt_qsc.txt \
             --yes --no-git \
@@ -399,9 +405,10 @@ jobs:
 
               # Build the strategy with Aider
               parent_file = f"strategies/{make_name(depends_on)}.py" if depends_on else None
+              aider_model = os.environ["AIDER_MODEL"]
               aider_cmd = [
                   "aider",
-                  "--model", "gemini/gemini-2.5-flash",
+                  "--model", aider_model,
                   "--read", "config/qc_api_reference.txt",
                   "--read", "config/aider_system_prompt_qsc.txt",
                   "--yes", "--no-git",
