@@ -12,10 +12,35 @@ concurrency:
 
 jobs:
   # ────────────────────────────────────────────────
+  # Job 0: Smoke tests — must pass before any work
+  # ────────────────────────────────────────────────
+  smoke-test:
+    name: QSC Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest
+        run: pip install pytest --quiet
+
+      - name: Run smoke tests
+        run: pytest tests/test_qsc_smoke.py -v
+
+  # ────────────────────────────────────────────────
   # Job 1: Parse the prompt queue into JSON arrays
   # ────────────────────────────────────────────────
   parse-prompts:
     name: Parse Prompt Queue
+    needs: smoke-test
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
