@@ -79,7 +79,7 @@ def validate_file(file_path: Path) -> list[str]:
     if not file_path.exists():
         return [f"File not found: {file_path}"]
 
-    if not file_path.suffix == ".py":
+    if file_path.suffix != ".py":
         return [f"Expected a .py file, got: {file_path}"]
 
     errors: list[str] = []

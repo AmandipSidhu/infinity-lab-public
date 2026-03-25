@@ -109,6 +109,7 @@ jobs:
         id: aider
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PROMPT_CONTENT: ${{ matrix.prompt.content }}
         run: |
           aider \
             --model gemini/gemini-2.5-flash \
@@ -116,7 +117,7 @@ jobs:
             --read config/aider_system_prompt_qsc.txt \
             --yes --no-git \
             --new-file "strategies/${{ steps.name.outputs.name }}.py" \
-            --message "${{ matrix.prompt.content }}"
+            --message "$PROMPT_CONTENT"
 
       - name: Quick validation
         id: validate
@@ -136,9 +137,11 @@ jobs:
 
       - name: Log result
         if: always()
+        env:
+          PROMPT_CONTENT: ${{ matrix.prompt.content }}
         run: |
           python scripts/log_grinder_result.py \
-            --prompt "${{ matrix.prompt.content }}" \
+            --prompt "$PROMPT_CONTENT" \
             --name "${{ steps.name.outputs.name }}" \
             --aider "${{ steps.aider.outcome }}" \
             --validate "${{ steps.validate.outcome }}" \
@@ -201,6 +204,7 @@ jobs:
         id: aider
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PROMPT_CONTENT: ${{ matrix.prompt.content }}
         run: |
           aider \
             --model gemini/gemini-2.5-flash \
@@ -208,7 +212,7 @@ jobs:
             --read config/aider_system_prompt_qsc.txt \
             --yes --no-git \
             --new-file "strategies/${{ steps.name.outputs.name }}.py" \
-            --message "${{ matrix.prompt.content }}"
+            --message "$PROMPT_CONTENT"
 
       - name: Quick validation
         id: validate
@@ -228,9 +232,11 @@ jobs:
 
       - name: Log result
         if: always()
+        env:
+          PROMPT_CONTENT: ${{ matrix.prompt.content }}
         run: |
           python scripts/log_grinder_result.py \
-            --prompt "${{ matrix.prompt.content }}" \
+            --prompt "$PROMPT_CONTENT" \
             --name "${{ steps.name.outputs.name }}" \
             --aider "${{ steps.aider.outcome }}" \
             --validate "${{ steps.validate.outcome }}" \

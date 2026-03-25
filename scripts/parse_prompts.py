@@ -16,7 +16,6 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Optional
 
 
 PRIORITY_TAGS = {"PRIORITY", "INDEPENDENT", "IF-PREVIOUS-PASSED", "LOW-PRIORITY"}
@@ -58,7 +57,7 @@ def parse_queue_file(path: Path) -> list[dict]:
         content = text[content_start:content_end].strip()
 
         # Determine depends_on for conditional prompts
-        depends_on: Optional[str] = None
+        depends_on: str | None = None
         if tag == "IF-PREVIOUS-PASSED":
             dep_match = DEPENDENCY_RE.search(content)
             if dep_match:
