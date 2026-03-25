@@ -96,8 +96,10 @@ jobs:
 
       - name: Generate strategy name
         id: name
+        env:
+          PROMPT_TITLE: ${{ matrix.prompt.title }}
         run: |
-          name=$(echo "${{ matrix.prompt.title }}" | tr '[:upper:]' '[:lower:]' | tr -s ' [:punct:]' '_' | sed 's/_\+/_/g' | sed 's/^_//;s/_$//')
+          name=$(echo "$PROMPT_TITLE" | tr '[:upper:]' '[:lower:]' | tr -s ' [:punct:]' '_' | sed 's/_\+/_/g' | sed 's/^_//;s/_$//')
           echo "name=$name" >> $GITHUB_OUTPUT
           echo "Strategy name: $name"
 
@@ -191,8 +193,10 @@ jobs:
 
       - name: Generate strategy name
         id: name
+        env:
+          PROMPT_TITLE: ${{ matrix.prompt.title }}
         run: |
-          name=$(echo "${{ matrix.prompt.title }}" | tr '[:upper:]' '[:lower:]' | tr -s ' [:punct:]' '_' | sed 's/_\+/_/g' | sed 's/^_//;s/_$//')
+          name=$(echo "$PROMPT_TITLE" | tr '[:upper:]' '[:lower:]' | tr -s ' [:punct:]' '_' | sed 's/_\+/_/g' | sed 's/^_//;s/_$//')
           echo "name=$name" >> $GITHUB_OUTPUT
           echo "Strategy name: $name"
 

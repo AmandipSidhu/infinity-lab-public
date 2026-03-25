@@ -84,71 +84,71 @@ def format_failure_section(
     timestamp = record.get("timestamp", "")
 
     lines: list[str] = []
-    lines.append(f"---")
-    lines.append(f"")
+    lines.append("---")
+    lines.append("")
     lines.append(f"## Failure {index}: `{name}`")
-    lines.append(f"")
+    lines.append("")
     lines.append(f"**Status:** {status}  ")
     lines.append(f"**Priority:** {priority}  ")
     if parent:
         lines.append(f"**Parent:** {parent}  ")
     if timestamp:
         lines.append(f"**Timestamp:** {timestamp}  ")
-    lines.append(f"")
+    lines.append("")
 
-    lines.append(f"### Original Prompt")
-    lines.append(f"")
+    lines.append("### Original Prompt")
+    lines.append("")
     lines.append(f"{prompt}")
-    lines.append(f"")
+    lines.append("")
 
     if qc_error:
-        lines.append(f"### Error Message")
-        lines.append(f"")
-        lines.append(f"```")
+        lines.append("### Error Message")
+        lines.append("")
+        lines.append("```")
         lines.append(qc_error)
-        lines.append(f"```")
-        lines.append(f"")
+        lines.append("```")
+        lines.append("")
 
     # Aider/validation stage errors
     if not record.get("aider_success"):
-        lines.append(f"### Aider Build Failed")
-        lines.append(f"")
+        lines.append("### Aider Build Failed")
+        lines.append("")
         lines.append(
             "Aider did not produce output. Possible causes: timeout, rate limit, API error."
         )
-        lines.append(f"")
+        lines.append("")
     elif not record.get("syntax_valid"):
-        lines.append(f"### Syntax Validation Failed")
-        lines.append(f"")
+        lines.append("### Syntax Validation Failed")
+        lines.append("")
         lines.append(
             "The generated code failed `qc_quick_validate.py`. "
             "Check for hallucinated API patterns (self.algorithm.xxx, algorithm.portfolio.xxx)."
         )
-        lines.append(f"")
+        lines.append("")
 
     if code:
-        lines.append(f"### Generated Code")
-        lines.append(f"")
-        lines.append(f"```python")
+        lines.append("### Generated Code")
+        lines.append("")
+        lines.append("```python")
         lines.append(code)
-        lines.append(f"```")
-        lines.append(f"")
+        lines.append("```")
+        lines.append("")
     else:
-        lines.append(f"### Generated Code")
-        lines.append(f"")
-        lines.append(f"_Code file not found (strategy may not have been generated)._")
-        lines.append(f"")
+        lines.append("### Generated Code")
+        lines.append("")
+        lines.append("_Code file not found (strategy may not have been generated)._")
+        lines.append("")
 
     if qc_data:
-        lines.append(f"### QC Backtest Data")
-        lines.append(f"")
-        lines.append(f"```json")
+        lines.append("### QC Backtest Data")
+        lines.append("")
+        lines.append("```json")
         lines.append(json.dumps(qc_data, indent=2))
-        lines.append(f"```")
-        lines.append(f"")
+        lines.append("```")
+        lines.append("")
 
-    lines.append(f"### Suggested Fix")
-    lines.append(f"")
+    lines.append("### Suggested Fix")
+    lines.append("")
     if status == "syntax_error":
         lines.append(
             "1. Check the generated code for `self.algorithm.` or `algorithm.portfolio.` patterns\n"
@@ -173,7 +173,7 @@ def format_failure_section(
             "2. Simplify the strategy requirements\n"
             "3. Verify QC API patterns against `config/qc_api_reference.txt`"
         )
-    lines.append(f"")
+    lines.append("")
 
     return "\n".join(lines)
 
@@ -212,14 +212,14 @@ def main() -> None:
 
     header_lines: list[str] = [
         f"# Mia2 Escalation Bundle — {now}",
-        f"",
+        "",
         f"**Total failures:** {len(failures)}  ",
         f"**Total builds:** {len(records)}  ",
-        f"",
-        f"> These builds failed the QSC grinder and require Mia2 intervention.",
-        f"> Each section below contains the original prompt, generated code (if any),",
-        f"> error messages, and a suggested fix direction.",
-        f"",
+        "",
+        "> These builds failed the QSC grinder and require Mia2 intervention.",
+        "> Each section below contains the original prompt, generated code (if any),",
+        "> error messages, and a suggested fix direction.",
+        "",
     ]
 
     if not failures:

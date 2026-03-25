@@ -268,6 +268,25 @@ class TestLogGrinderResult:
         assert metrics["qc_total_orders"] == 42.0
         assert abs(metrics["qc_net_pnl_pct"] - 5.3) < 0.01
 
+    def test_parse_qc_result_zero_numeric_values(self, tmp_path):
+        """Numeric 0 / 0.0 are valid metric values and must not be lost (was falsy-or bug)."""
+        result = {
+            "backtest_id": "Test-Zero-123",
+            "statistics": {
+                "Sharpe Ratio": 0,       # integer zero — falsy
+                "Total Orders": 0.0,     # float zero — falsy
+                "Net Profit": 0.0,
+                "Drawdown": 0.0,
+            },
+        }
+        result_file = tmp_path / "result_zero.json"
+        result_file.write_text(json.dumps(result))
+        metrics = log_grinder_result.parse_qc_result(str(result_file))
+        assert metrics["qc_submitted"] is True
+        assert metrics["qc_sharpe"] == 0.0
+        assert metrics["qc_total_orders"] == 0.0
+        assert metrics["qc_net_pnl_pct"] == 0.0
+
     def test_determine_status_qc_success(self):
         qc_metrics = {
             "qc_submitted": True,

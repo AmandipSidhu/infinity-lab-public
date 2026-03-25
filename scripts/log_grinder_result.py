@@ -61,7 +61,9 @@ def parse_qc_result(qc_result_path: str | None) -> dict:
 
     def _get_float(key_variants: list[str]) -> float | None:
         for key in key_variants:
-            raw = stats.get(key) or data.get(key)
+            raw = stats.get(key)
+            if raw is None:
+                raw = data.get(key)
             if raw is not None:
                 try:
                     return float(str(raw).replace("%", "").replace(",", ""))
