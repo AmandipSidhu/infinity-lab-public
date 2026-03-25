@@ -523,15 +523,43 @@ jobs:
           echo "=== Failures packaged ==="
           cat mia_context/failed_builds.md
 
-      - name: Upload final artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: qsc-grinder-results
-          path: |
-            output/grinder_results.jsonl
-            output/grinder_summary.md
-            mia_context/failed_builds.md
-          if-no-files-found: ignore
+      - name: Push grinder outputs to private repo
+        env:
+          INFINITY_PUBLIC_TO_PRIVATE_ACCESS: ${{ secrets.INFINITY_PUBLIC_TO_PRIVATE_ACCESS }}
+        run: |
+          if [ -z "${INFINITY_PUBLIC_TO_PRIVATE_ACCESS:-}" ]; then
+            echo "::warning::INFINITY_PUBLIC_TO_PRIVATE_ACCESS not set — grinder outputs not pushed to infinity-lab-private."
+            exit 0
+          fi
+          PRIVATE_REPO="AmandipSidhu/infinity-lab-private"
+          RUN_DATE="$(date -u +%Y-%m-%d)"
+          RUN_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          DEST_DIR="grinder-runs/${RUN_DATE}"
+          if ! git clone \
+            "https://x-access-token:${INFINITY_PUBLIC_TO_PRIVATE_ACCESS}@github.com/${PRIVATE_REPO}.git" \
+            /tmp/infinity-lab-private 2>&1; then
+            echo "::warning::Failed to clone ${PRIVATE_REPO} — grinder outputs not persisted."
+            exit 0
+          fi
+          mkdir -p "/tmp/infinity-lab-private/${DEST_DIR}"
+          for src in output/grinder_results.jsonl output/grinder_summary.md mia_context/failed_builds.md; do
+            if [ -f "$src" ]; then
+              cp "$src" "/tmp/infinity-lab-private/${DEST_DIR}/"
+              echo "Copied: $src → ${DEST_DIR}/"
+            else
+              echo "::warning::File not found, skipping: $src"
+            fi
+          done
+          cd /tmp/infinity-lab-private
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add "${DEST_DIR}"
+          if git diff --cached --quiet; then
+            echo "Nothing to commit — outputs already current."
+          else
+            git commit -m "chore: grinder run ${RUN_TS}"
+            git push || echo "::warning::Could not push grinder outputs to ${PRIVATE_REPO}."
+          fi
 
   # ────────────────────────────────────────────────────────────────────────────
   # Job 6: QSC Integration — manual gate (Aider + QC end-to-end)
