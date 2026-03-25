@@ -1,0 +1,231 @@
+# QuantConnect LEAN Python API Reference
+# Source: https://www.quantconnect.com/docs/v2/writing-algorithms
+# Use this reference BEFORE writing any QC code. Do NOT guess method names.
+
+============================
+ALGORITHM SKELETON
+============================
+
+from AlgorithmImports import *
+
+class MyStrategyAlgorithm(QCAlgorithm):
+
+    def initialize(self) -> None:
+        self.set_start_date(2020, 1, 1)
+        self.set_end_date(2023, 12, 31)
+        self.set_cash(100000)
+        self.symbol = self.add_equity("SPY", Resolution.DAILY).symbol
+
+    def on_data(self, data: Slice) -> None:
+        if not self.portfolio[self.symbol].invested:
+            self.market_order(self.symbol, 10)
+
+    def on_end_of_algorithm(self) -> None:
+        self.log(f"Final portfolio value: {self.portfolio.total_portfolio_value}")
+
+============================
+PORTFOLIO ACCESS — CORRECT PATTERNS
+============================
+
+# Check if holding a position
+if self.portfolio[symbol].invested:
+
+# Get quantity held
+qty = self.portfolio[symbol].quantity
+
+# Get unrealized profit
+pnl = self.portfolio[symbol].unrealized_profit
+
+# Get total portfolio value
+total = self.portfolio.total_portfolio_value
+
+# Get cash
+cash = self.portfolio.cash
+
+# Iterate holdings
+for symbol, holding in self.portfolio.items():
+    if holding.invested:
+        self.log(f"{symbol}: {holding.quantity}")
+
+============================
+ORDER METHODS — CORRECT PATTERNS
+============================
+
+# Market order
+ticket = self.market_order(symbol, quantity)
+
+# Limit order
+ticket = self.limit_order(symbol, quantity, limit_price)
+
+# Stop-market order
+ticket = self.stop_market_order(symbol, quantity, stop_price)
+# Source: https://www.quantconnect.com/docs/v2/writing-algorithms/trading-and-orders/order-types/stop-market-orders
+
+# Stop-limit order
+ticket = self.stop_limit_order(symbol, quantity, stop_price, limit_price)
+
+# Market on open / close
+ticket = self.market_on_open_order(symbol, quantity)
+ticket = self.market_on_close_order(symbol, quantity)
+
+# Liquidate entire position
+self.liquidate(symbol)
+
+# Set holdings as a fraction of portfolio (0.0 to 1.0)
+self.set_holdings(symbol, 0.5)
+
+============================
+COMMON HALLUCINATIONS — ❌ WRONG vs ✅ CORRECT
+============================
+
+# Portfolio iteration
+❌ algorithm.portfolio.values
+❌ self.portfolio.values()
+✅ self.portfolio.items()      # or: for sym, holding in self.portfolio.items()
+
+# Portfolio access
+❌ self.portfolio.get(symbol)
+❌ self.portfolio.holdings[symbol]
+✅ self.portfolio[symbol]
+
+# Stop market order
+❌ self.algorithm.stop_market_order(symbol, qty, price)
+❌ algorithm.stop_market_order(symbol, qty, price)
+✅ self.stop_market_order(symbol, qty, price)
+
+# Market order
+❌ self.algorithm.market_order(symbol, qty)
+✅ self.market_order(symbol, qty)
+
+# Liquidate
+❌ self.algorithm.liquidate(symbol)
+✅ self.liquidate(symbol)
+
+# Set holdings
+❌ self.algorithm.set_holdings(symbol, fraction)
+✅ self.set_holdings(symbol, fraction)
+
+# Invested check
+❌ self.portfolio.is_invested(symbol)
+❌ self.is_invested(symbol)
+✅ self.portfolio[symbol].invested
+
+# Class name — must inherit QCAlgorithm
+❌ class MyStrategy:
+❌ class MyStrategy(Algorithm):
+✅ class MyStrategyAlgorithm(QCAlgorithm):
+
+============================
+INDICATORS — CORRECT PATTERNS
+============================
+
+# Create indicator in initialize()
+self.sma = self.SMA(symbol, 20, Resolution.DAILY)
+self.rsi = self.RSI(symbol, 14, MovingAverageType.WILDERS, Resolution.DAILY)
+self.ema = self.EMA(symbol, 10, Resolution.DAILY)
+self.bb = self.BB(symbol, 20, 2, MovingAverageType.SIMPLE, Resolution.DAILY)
+self.macd = self.MACD(symbol, 12, 26, 9, MovingAverageType.EXPONENTIAL, Resolution.DAILY)
+self.atr = self.ATR(symbol, 14, MovingAverageType.SIMPLE, Resolution.DAILY)
+self.adx = self.ADX(symbol, 14, Resolution.DAILY)
+self.vwap = self.VWAP(symbol)
+
+# Check if ready before using
+if not self.sma.is_ready:
+    return
+
+# Access current value
+current_sma = self.sma.current.value
+current_rsi = self.rsi.current.value
+
+============================
+UNIVERSE SELECTION
+============================
+
+# Add single equity
+self.symbol = self.add_equity("SPY", Resolution.DAILY).symbol
+
+# Add multiple equities
+symbols = [self.add_equity(ticker, Resolution.MINUTE).symbol for ticker in ["SPY", "QQQ"]]
+
+# Add crypto
+self.btc = self.add_crypto("BTCUSD", Resolution.HOUR).symbol
+
+# Add futures
+self.es = self.add_future(Futures.Indices.SP_500_E_MINI, Resolution.MINUTE)
+
+============================
+SCHEDULING
+============================
+
+# Schedule function at market open + 30 min
+self.schedule.on(
+    self.date_rules.every_day(self.symbol),
+    self.time_rules.after_market_open(self.symbol, 30),
+    self.rebalance
+)
+
+# Schedule at market close minus 10 min
+self.schedule.on(
+    self.date_rules.every_day(self.symbol),
+    self.time_rules.before_market_close(self.symbol, 10),
+    self.close_positions
+)
+
+============================
+HISTORY REQUESTS
+============================
+
+# Get last N bars of history
+history = self.history(symbol, 30, Resolution.DAILY)
+
+# Access OHLCV in history
+for bar in history.itertuples():
+    close = bar.close
+    volume = bar.volume
+
+# Get specific field
+closes = history["close"]
+
+============================
+DATA SLICES (on_data)
+============================
+
+def on_data(self, data: Slice) -> None:
+    # Check if symbol has data
+    if not data.bars.contains_key(self.symbol):
+        return
+
+    bar = data.bars[self.symbol]
+    open_price = bar.open
+    high_price = bar.high
+    low_price = bar.low
+    close_price = bar.close
+    volume = bar.volume
+
+============================
+LOGGING
+============================
+
+self.log(f"Message: {value}")
+self.debug(f"Debug: {value}")
+self.error(f"Error: {value}")
+
+============================
+BENCHMARK / RISK
+============================
+
+# Set benchmark
+self.set_benchmark("SPY")
+
+# Set risk-free rate
+self.set_risk_free_interest_rate_model(InterestRateProvider())
+
+============================
+NOTES
+============================
+
+1. Class MUST inherit QCAlgorithm: class MyAlgorithm(QCAlgorithm)
+2. Entry point is initialize() not __init__()
+3. Never use self.algorithm.xxx — "self" IS the algorithm
+4. All method calls are self.method_name(), not self.algorithm.method_name()
+5. Import everything with: from AlgorithmImports import *

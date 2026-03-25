@@ -1,0 +1,595 @@
+name: QSC Grinder
+# MODEL LOCK: QSC uses exclusively Gemini Flash (gemini/gemini-2.5-flash).
+# No other LLM provider (Claude, GPT, OpenAI, DeepSeek, etc.) is used or permitted.
+# The only external secrets required are GEMINI_API_KEY, QC_USER_ID, and QC_API_TOKEN.
+
+on:
+  push:
+    paths:
+      - 'prompts/**'
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        description: "Run full QSC integration test (Aider + QC)?"
+        type: boolean
+        default: false
+
+env:
+  AIDER_MODEL: gemini/gemini-2.5-flash  # Single source of truth — do not change to another provider
+
+concurrency:
+  group: qsc-grinder-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ────────────────────────────────────────────────
+  # Job 0: Smoke tests — must pass before any work
+  # ────────────────────────────────────────────────
+  smoke-test:
+    name: QSC Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest
+        run: pip install pytest --quiet
+
+      - name: Run smoke tests
+        run: pytest tests/test_qsc_smoke.py -v
+
+  # ────────────────────────────────────────────────
+  # Job 1: Parse the prompt queue into JSON arrays
+  # ────────────────────────────────────────────────
+  parse-prompts:
+    name: Parse Prompt Queue
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      priority_prompts: ${{ steps.parse.outputs.priority_prompts }}
+      independent_prompts: ${{ steps.parse.outputs.independent_prompts }}
+      conditional_prompts: ${{ steps.parse.outputs.conditional_prompts }}
+      low_priority_prompts: ${{ steps.parse.outputs.low_priority_prompts }}
+      has_priority: ${{ steps.parse.outputs.has_priority }}
+      has_independent: ${{ steps.parse.outputs.has_independent }}
+      has_conditional: ${{ steps.parse.outputs.has_conditional }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Parse prompts/queue.md
+        id: parse
+        run: |
+          python scripts/parse_prompts.py prompts/queue.md --split > /tmp/parsed.json
+          cat /tmp/parsed.json
+
+          PRIORITY=$(python -c "import json,sys; d=json.load(open('/tmp/parsed.json')); print(json.dumps(d['priority_prompts']))")
+          INDEPENDENT=$(python -c "import json,sys; d=json.load(open('/tmp/parsed.json')); print(json.dumps(d['independent_prompts']))")
+          CONDITIONAL=$(python -c "import json,sys; d=json.load(open('/tmp/parsed.json')); print(json.dumps(d['conditional_prompts']))")
+          LOW=$(python -c "import json,sys; d=json.load(open('/tmp/parsed.json')); print(json.dumps(d['low_priority_prompts']))")
+
+          echo "priority_prompts=$PRIORITY" >> $GITHUB_OUTPUT
+          echo "independent_prompts=$INDEPENDENT" >> $GITHUB_OUTPUT
+          echo "conditional_prompts=$CONDITIONAL" >> $GITHUB_OUTPUT
+          echo "low_priority_prompts=$LOW" >> $GITHUB_OUTPUT
+
+          # Flags to skip empty matrix jobs
+          HAS_PRIORITY=$(python -c "import json; d=json.load(open('/tmp/parsed.json')); print('true' if d['priority_prompts'] else 'false')")
+          HAS_INDEPENDENT=$(python -c "import json; d=json.load(open('/tmp/parsed.json')); print('true' if d['independent_prompts'] else 'false')")
+          HAS_CONDITIONAL=$(python -c "import json; d=json.load(open('/tmp/parsed.json')); print('true' if d['conditional_prompts'] else 'false')")
+
+          echo "has_priority=$HAS_PRIORITY" >> $GITHUB_OUTPUT
+          echo "has_independent=$HAS_INDEPENDENT" >> $GITHUB_OUTPUT
+          echo "has_conditional=$HAS_CONDITIONAL" >> $GITHUB_OUTPUT
+
+          echo "Parsed $(python -c "import json; d=json.load(open('/tmp/parsed.json')); total=sum(len(v) for v in d.values()); print(total)") total prompts"
+
+  # ────────────────────────────────────────────────
+  # Job 2: Priority builds (parallel matrix)
+  # ────────────────────────────────────────────────
+  priority-builds:
+    name: Priority Build — ${{ matrix.prompt.title }}
+    needs: parse-prompts
+    if: needs.parse-prompts.outputs.has_priority == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        prompt: ${{ fromJson(needs.parse-prompts.outputs.priority_prompts) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install aider-chat --quiet
+          pip install requests --quiet
+
+      - name: Generate strategy name
+        id: name
+        env:
+          PROMPT_TITLE: ${{ matrix.prompt.title }}
+        run: |
+          name=$(echo "$PROMPT_TITLE" | tr '[:upper:]' '[:lower:]' | tr -s ' [:punct:]' '_' | sed 's/_\+/_/g' | sed 's/^_//;s/_$//')
+          echo "name=$name" >> $GITHUB_OUTPUT
+          echo "Strategy name: $name"
+
+      - name: Create output directories
+        run: |
+          mkdir -p output strategies mia_context
+
+      - name: Run Aider with QC API docs
+        id: aider
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PROMPT_CONTENT: ${{ matrix.prompt.content }}
+        run: |
+          aider \
+            --model "$AIDER_MODEL" \
+            --read config/qc_api_reference.txt \
+            --read config/aider_system_prompt_qsc.txt \
+            --yes --no-git \
+            --new-file "strategies/${{ steps.name.outputs.name }}.py" \
+            --message "$PROMPT_CONTENT"
+
+      - name: Quick validation
+        id: validate
+        run: |
+          python scripts/qc_quick_validate.py "strategies/${{ steps.name.outputs.name }}.py"
+
+      - name: Submit to QuantConnect
+        id: qc
+        continue-on-error: true
+        env:
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+        run: |
+          python scripts/qc_upload_eval.py \
+            --strategy "strategies/${{ steps.name.outputs.name }}.py" \
+            --output "output/${{ steps.name.outputs.name }}_qc_result.json"
+
+      - name: Log result
+        if: always()
+        env:
+          PROMPT_CONTENT: ${{ matrix.prompt.content }}
+        run: |
+          python scripts/log_grinder_result.py \
+            --prompt "$PROMPT_CONTENT" \
+            --name "${{ steps.name.outputs.name }}" \
+            --aider "${{ steps.aider.outcome }}" \
+            --validate "${{ steps.validate.outcome }}" \
+            --qc-result "output/${{ steps.name.outputs.name }}_qc_result.json" \
+            --priority "PRIORITY"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: priority-${{ steps.name.outputs.name }}
+          path: |
+            strategies/${{ steps.name.outputs.name }}.py
+            output/${{ steps.name.outputs.name }}_qc_result.json
+            output/grinder_results.jsonl
+          if-no-files-found: ignore
+
+  # ────────────────────────────────────────────────
+  # Job 3: Independent builds (parallel matrix)
+  # ────────────────────────────────────────────────
+  independent-builds:
+    name: Independent Build — ${{ matrix.prompt.title }}
+    needs: parse-prompts
+    if: needs.parse-prompts.outputs.has_independent == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        prompt: ${{ fromJson(needs.parse-prompts.outputs.independent_prompts) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install aider-chat --quiet
+          pip install requests --quiet
+
+      - name: Generate strategy name
+        id: name
+        env:
+          PROMPT_TITLE: ${{ matrix.prompt.title }}
+        run: |
+          name=$(echo "$PROMPT_TITLE" | tr '[:upper:]' '[:lower:]' | tr -s ' [:punct:]' '_' | sed 's/_\+/_/g' | sed 's/^_//;s/_$//')
+          echo "name=$name" >> $GITHUB_OUTPUT
+          echo "Strategy name: $name"
+
+      - name: Create output directories
+        run: |
+          mkdir -p output strategies mia_context
+
+      - name: Run Aider with QC API docs
+        id: aider
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PROMPT_CONTENT: ${{ matrix.prompt.content }}
+        run: |
+          aider \
+            --model "$AIDER_MODEL" \
+            --read config/qc_api_reference.txt \
+            --read config/aider_system_prompt_qsc.txt \
+            --yes --no-git \
+            --new-file "strategies/${{ steps.name.outputs.name }}.py" \
+            --message "$PROMPT_CONTENT"
+
+      - name: Quick validation
+        id: validate
+        run: |
+          python scripts/qc_quick_validate.py "strategies/${{ steps.name.outputs.name }}.py"
+
+      - name: Submit to QuantConnect
+        id: qc
+        continue-on-error: true
+        env:
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+        run: |
+          python scripts/qc_upload_eval.py \
+            --strategy "strategies/${{ steps.name.outputs.name }}.py" \
+            --output "output/${{ steps.name.outputs.name }}_qc_result.json"
+
+      - name: Log result
+        if: always()
+        env:
+          PROMPT_CONTENT: ${{ matrix.prompt.content }}
+        run: |
+          python scripts/log_grinder_result.py \
+            --prompt "$PROMPT_CONTENT" \
+            --name "${{ steps.name.outputs.name }}" \
+            --aider "${{ steps.aider.outcome }}" \
+            --validate "${{ steps.validate.outcome }}" \
+            --qc-result "output/${{ steps.name.outputs.name }}_qc_result.json" \
+            --priority "INDEPENDENT"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: independent-${{ steps.name.outputs.name }}
+          path: |
+            strategies/${{ steps.name.outputs.name }}.py
+            output/${{ steps.name.outputs.name }}_qc_result.json
+            output/grinder_results.jsonl
+          if-no-files-found: ignore
+
+  # ────────────────────────────────────────────────
+  # Job 4: Conditional builds (sequential, check parent)
+  # ────────────────────────────────────────────────
+  conditional-builds:
+    name: Conditional Builds
+    needs: [parse-prompts, priority-builds, independent-builds]
+    if: |
+      always() &&
+      needs.parse-prompts.outputs.has_conditional == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install aider-chat --quiet
+          pip install requests --quiet
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/artifacts
+        continue-on-error: true
+
+      - name: Merge grinder_results.jsonl from all prior jobs
+        run: |
+          mkdir -p output strategies mia_context
+          # Merge all artifact JSONL files into local output/
+          find /tmp/artifacts -name 'grinder_results.jsonl' -exec cat {} >> output/grinder_results.jsonl \; 2>/dev/null || true
+          # Merge strategy files
+          find /tmp/artifacts -name '*.py' -exec cp {} strategies/ \; 2>/dev/null || true
+          echo "Merged artifacts. Results so far:"
+          cat output/grinder_results.jsonl 2>/dev/null || echo "(none)"
+
+      - name: Run conditional builds sequentially
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QC_USER_ID: ${{ secrets.QC_USER_ID }}
+          QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+          CONDITIONAL_PROMPTS: ${{ needs.parse-prompts.outputs.conditional_prompts }}
+        run: |
+          python - <<'PYEOF'
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          conditional_prompts = json.loads(os.environ["CONDITIONAL_PROMPTS"])
+          results_path = Path("output/grinder_results.jsonl")
+
+          def load_results():
+              if not results_path.exists():
+                  return []
+              records = []
+              for line in results_path.read_text().splitlines():
+                  line = line.strip()
+                  if line:
+                      try:
+                          records.append(json.loads(line))
+                      except json.JSONDecodeError:
+                          pass
+              return records
+
+          def parent_passed(parent_name: str, records: list) -> bool:
+              """Check if the parent strategy succeeded."""
+              for r in records:
+                  # Match on strategy_name or title-derived name
+                  candidate = r.get("strategy_name", "")
+                  title_slug = parent_name.lower().replace(" ", "_")
+                  if candidate == title_slug or candidate == parent_name:
+                      return r.get("status") == "qc_success"
+              return False
+
+          def make_name(title: str) -> str:
+              import re
+              name = title.lower()
+              name = re.sub(r"[^a-z0-9]+", "_", name)
+              name = name.strip("_")
+              return name
+
+          for prompt in conditional_prompts:
+              title = prompt["title"]
+              content = prompt["content"]
+              depends_on = prompt.get("depends_on")
+              name = make_name(title)
+
+              print(f"\n=== Conditional build: {title} (depends on: {depends_on}) ===")
+
+              records = load_results()
+
+              # Check parent status
+              if depends_on and not parent_passed(depends_on, records):
+                  print(f"SKIP: Parent '{depends_on}' did not pass. Logging as skipped.")
+                  subprocess.run([
+                      sys.executable, "scripts/log_grinder_result.py",
+                      "--prompt", content,
+                      "--name", name,
+                      "--aider", "skipped",
+                      "--validate", "skipped",
+                      "--priority", "IF-PREVIOUS-PASSED",
+                      "--parent", depends_on or "",
+                  ], check=False)
+                  continue
+
+              # Build the strategy with Aider
+              parent_file = f"strategies/{make_name(depends_on)}.py" if depends_on else None
+              aider_model = os.environ["AIDER_MODEL"]
+              aider_cmd = [
+                  "aider",
+                  "--model", aider_model,
+                  "--read", "config/qc_api_reference.txt",
+                  "--read", "config/aider_system_prompt_qsc.txt",
+                  "--yes", "--no-git",
+                  "--new-file", f"strategies/{name}.py",
+                  "--message", content,
+              ]
+              if parent_file and Path(parent_file).exists():
+                  aider_cmd.extend(["--read", parent_file])
+
+              aider_result = subprocess.run(aider_cmd, check=False)
+              aider_outcome = "success" if aider_result.returncode == 0 else "failure"
+
+              # Validate
+              validate_result = subprocess.run([
+                  sys.executable, "scripts/qc_quick_validate.py",
+                  f"strategies/{name}.py",
+              ], check=False)
+              validate_outcome = "success" if validate_result.returncode == 0 else "failure"
+
+              # Submit to QC if validation passed
+              qc_result_path = f"output/{name}_qc_result.json"
+              if validate_outcome == "success":
+                  subprocess.run([
+                      sys.executable, "scripts/qc_upload_eval.py",
+                      "--strategy", f"strategies/{name}.py",
+                      "--output", qc_result_path,
+                  ], check=False)
+
+              # Log result
+              subprocess.run([
+                  sys.executable, "scripts/log_grinder_result.py",
+                  "--prompt", content,
+                  "--name", name,
+                  "--aider", aider_outcome,
+                  "--validate", validate_outcome,
+                  "--qc-result", qc_result_path,
+                  "--priority", "IF-PREVIOUS-PASSED",
+                  "--parent", depends_on or "",
+              ], check=False)
+
+          print("\nConditional builds complete.")
+          PYEOF
+
+      - name: Upload conditional artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conditional-builds
+          path: |
+            strategies/
+            output/
+          if-no-files-found: ignore
+
+  # ────────────────────────────────────────────────
+  # Job 5: Summary (always runs)
+  # ────────────────────────────────────────────────
+  summary:
+    name: Grinder Summary
+    needs: [priority-builds, independent-builds, conditional-builds]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/artifacts
+        continue-on-error: true
+
+      - name: Merge all grinder_results.jsonl
+        run: |
+          mkdir -p output
+          find /tmp/artifacts -name 'grinder_results.jsonl' -exec cat {} >> output/grinder_results.jsonl \; 2>/dev/null || true
+          echo "Merged results:"
+          cat output/grinder_results.jsonl 2>/dev/null || echo "(no results)"
+
+      - name: Generate summary report
+        run: |
+          python scripts/generate_grinder_summary.py \
+            --input output/grinder_results.jsonl \
+            --output output/grinder_summary.md
+          echo "=== Summary ==="
+          cat output/grinder_summary.md
+
+      - name: Post to GitHub Step Summary
+        run: |
+          cat output/grinder_summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Package failures for Mia2
+        run: |
+          mkdir -p mia_context strategies
+          find /tmp/artifacts -name '*.py' -exec cp {} strategies/ \; 2>/dev/null || true
+          python scripts/package_failures_for_mia.py \
+            --input output/grinder_results.jsonl \
+            --strategies strategies \
+            --output mia_context/failed_builds.md
+          echo "=== Failures packaged ==="
+          cat mia_context/failed_builds.md
+
+      - name: Push grinder outputs to private repo
+        env:
+          INFINITY_PUBLIC_TO_PRIVATE_ACCESS: ${{ secrets.INFINITY_PUBLIC_TO_PRIVATE_ACCESS }}
+        run: |
+          if [ -z "${INFINITY_PUBLIC_TO_PRIVATE_ACCESS:-}" ]; then
+            echo "::warning::INFINITY_PUBLIC_TO_PRIVATE_ACCESS not set — grinder outputs not pushed to infinity-lab-private."
+            exit 0
+          fi
+          PRIVATE_REPO="AmandipSidhu/infinity-lab-private"
+          RUN_DATE="$(date -u +%Y-%m-%d)"
+          RUN_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          DEST_DIR="grinder-runs/${RUN_DATE}"
+          if ! git clone \
+            "https://x-access-token:${INFINITY_PUBLIC_TO_PRIVATE_ACCESS}@github.com/${PRIVATE_REPO}.git" \
+            /tmp/infinity-lab-private 2>&1; then
+            echo "::warning::Failed to clone ${PRIVATE_REPO} — grinder outputs not persisted."
+            exit 0
+          fi
+          mkdir -p "/tmp/infinity-lab-private/${DEST_DIR}"
+          for src in output/grinder_results.jsonl output/grinder_summary.md mia_context/failed_builds.md; do
+            if [ -f "$src" ]; then
+              cp "$src" "/tmp/infinity-lab-private/${DEST_DIR}/"
+              echo "Copied: $src → ${DEST_DIR}/"
+            else
+              echo "::warning::File not found, skipping: $src"
+            fi
+          done
+          cd /tmp/infinity-lab-private
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add "${DEST_DIR}"
+          if git diff --cached --quiet; then
+            echo "Nothing to commit — outputs already current."
+          else
+            git commit -m "chore: grinder run ${RUN_TS}"
+            git push || echo "::warning::Could not push grinder outputs to ${PRIVATE_REPO}."
+          fi
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 6: QSC Integration — manual gate (Aider + QC end-to-end)
+  # Runs only when workflow_dispatch with run_integration: true.
+  # Does NOT block regular push-triggered grinder runs.
+  # ────────────────────────────────────────────────────────────────────────────
+  qsc-integration:
+    name: QSC Integration Test
+    runs-on: ubuntu-latest
+    needs: smoke-test
+    if: github.event_name == 'workflow_dispatch' && inputs.run_integration == true
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      QSC_INTEGRATION: "1"
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      QC_USER_ID: ${{ secrets.QC_USER_ID }}
+      QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt --quiet
+
+      - name: Run QSC integration test
+        run: pytest tests/test_qsc_integration.py -v
