@@ -73,6 +73,20 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Notify Slack — Grinder started
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "SLACK_WEBHOOK not set — skipping notification"
+            exit 0
+          fi
+          MSG="🚀 QSC Grinder started — parsing prompt queue\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          jq -n --arg text "$MSG" '{"text": $text}' | \
+            curl -s -X POST "${SLACK_WEBHOOK}" \
+              -H 'Content-type: application/json' \
+              --data @- || true
+
       - name: Parse prompts/queue.md
         id: parse
         run: |
@@ -153,8 +167,8 @@ jobs:
             --model "$AIDER_MODEL" \
             --read config/qc_api_reference.txt \
             --read config/aider_system_prompt_qsc.txt \
-            --yes --no-git \
-            --new-file "strategies/${{ steps.name.outputs.name }}.py" \
+            --yes-always --no-git \
+            --file "strategies/${{ steps.name.outputs.name }}.py" \
             --message "$PROMPT_CONTENT"
 
       - name: Quick validation
@@ -185,6 +199,30 @@ jobs:
             --validate "${{ steps.validate.outcome }}" \
             --qc-result "output/${{ steps.name.outputs.name }}_qc_result.json" \
             --priority "PRIORITY"
+
+      - name: Notify Slack — build result
+        if: always()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          TITLE: ${{ matrix.prompt.title }}
+        run: |
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "SLACK_WEBHOOK not set — skipping notification"
+            exit 0
+          fi
+          AIDER="${{ steps.aider.outcome }}"
+          VALIDATE="${{ steps.validate.outcome }}"
+          QC="${{ steps.qc.outcome }}"
+          if [ "$AIDER" = "success" ] && [ "$VALIDATE" = "success" ]; then
+            ICON="✅"
+          else
+            ICON="❌"
+          fi
+          MSG="${ICON} ${TITLE} — aider: ${AIDER} | validate: ${VALIDATE} | qc: ${QC}"
+          jq -n --arg text "$MSG" '{"text": $text}' | \
+            curl -s -X POST "${SLACK_WEBHOOK}" \
+              -H 'Content-type: application/json' \
+              --data @- || true
 
       - name: Upload artifacts
         if: always()
@@ -250,8 +288,8 @@ jobs:
             --model "$AIDER_MODEL" \
             --read config/qc_api_reference.txt \
             --read config/aider_system_prompt_qsc.txt \
-            --yes --no-git \
-            --new-file "strategies/${{ steps.name.outputs.name }}.py" \
+            --yes-always --no-git \
+            --file "strategies/${{ steps.name.outputs.name }}.py" \
             --message "$PROMPT_CONTENT"
 
       - name: Quick validation
@@ -282,6 +320,30 @@ jobs:
             --validate "${{ steps.validate.outcome }}" \
             --qc-result "output/${{ steps.name.outputs.name }}_qc_result.json" \
             --priority "INDEPENDENT"
+
+      - name: Notify Slack — build result
+        if: always()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          TITLE: ${{ matrix.prompt.title }}
+        run: |
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "SLACK_WEBHOOK not set — skipping notification"
+            exit 0
+          fi
+          AIDER="${{ steps.aider.outcome }}"
+          VALIDATE="${{ steps.validate.outcome }}"
+          QC="${{ steps.qc.outcome }}"
+          if [ "$AIDER" = "success" ] && [ "$VALIDATE" = "success" ]; then
+            ICON="✅"
+          else
+            ICON="❌"
+          fi
+          MSG="${ICON} ${TITLE} — aider: ${AIDER} | validate: ${VALIDATE} | qc: ${QC}"
+          jq -n --arg text "$MSG" '{"text": $text}' | \
+            curl -s -X POST "${SLACK_WEBHOOK}" \
+              -H 'Content-type: application/json' \
+              --data @- || true
 
       - name: Upload artifacts
         if: always()
@@ -416,8 +478,8 @@ jobs:
                   "--model", aider_model,
                   "--read", "config/qc_api_reference.txt",
                   "--read", "config/aider_system_prompt_qsc.txt",
-                  "--yes", "--no-git",
-                  "--new-file", f"strategies/{name}.py",
+                  "--yes-always", "--no-git",
+                  "--file", f"strategies/{name}.py",
                   "--message", content,
               ]
               if parent_file and Path(parent_file).exists():
@@ -511,6 +573,21 @@ jobs:
       - name: Post to GitHub Step Summary
         run: |
           cat output/grinder_summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify Slack — final summary
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "SLACK_WEBHOOK not set — skipping notification"
+            exit 0
+          fi
+          SUMMARY=$(cat output/grinder_summary.md 2>/dev/null || echo "(no summary)")
+          TRUNCATED=$(echo "$SUMMARY" | head -c 3000)
+          jq -n --arg text "$TRUNCATED" '{"text": $text}' | \
+            curl -s -X POST "${SLACK_WEBHOOK}" \
+              -H 'Content-type: application/json' \
+              --data @- || true
 
       - name: Package failures for Mia2
         run: |
