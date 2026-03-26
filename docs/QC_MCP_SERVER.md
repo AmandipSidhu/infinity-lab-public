@@ -412,6 +412,7 @@ Hard fail condition: `length == 0` OR `status != "success"`.
 | `read_backtest_statistics` | ❌ DOES NOT EXIST | Incorrectly referenced in PR #140 — never use |
 | `read_backtest_logs` | ❌ DOES NOT EXIST | Incorrectly referenced in PR #140 — never use |
 | `list_backtests` | ❌ DOES NOT EXIST | Not registered anywhere |
+| `read_backtests` | ❌ DOES NOT EXIST | Incorrectly referenced in PR #160, #165 — never use |
 
 ---
 
