@@ -32,6 +32,7 @@ def parse_qc_result(qc_result_path: str | None) -> dict:
     """Parse QC backtest result JSON and return relevant metrics."""
     defaults: dict = {
         "qc_submitted": False,
+        "qc_project_id": None,
         "qc_backtest_id": None,
         "qc_sharpe": None,
         "qc_total_orders": None,
@@ -54,6 +55,7 @@ def parse_qc_result(qc_result_path: str | None) -> dict:
         return defaults
 
     defaults["qc_submitted"] = True
+    defaults["qc_project_id"] = data.get("project_id")
     defaults["qc_backtest_id"] = data.get("backtest_id") or data.get("BacktestId")
 
     # Support both nested statistics and flat result formats
@@ -153,6 +155,7 @@ def main() -> None:
         "aider_tier": "gemini-flash",
         "syntax_valid": args.validate == "success",
         "qc_submitted": qc_metrics["qc_submitted"],
+        "qc_project_id": qc_metrics["qc_project_id"],
         "qc_backtest_id": qc_metrics["qc_backtest_id"],
         "qc_sharpe": qc_metrics["qc_sharpe"],
         "qc_total_orders": qc_metrics["qc_total_orders"],
