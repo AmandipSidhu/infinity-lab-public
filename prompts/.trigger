@@ -1,4 +1,3 @@
 # Workflow trigger
-# Last run: 2026-03-26 22:34:21 UTC
-# PR #165 merged: backtest node retry logic added
-# Manual restart requested
+# Last run: 2026-03-26 23:11:13 UTC
+# PR #166 merged: reverted PR #165 regression, removed broken read_backtests call
