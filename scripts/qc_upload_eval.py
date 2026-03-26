@@ -329,13 +329,9 @@ def _create_project(spec_name: str) -> int:
         _mcp_tool_call("create_project", {"name": spec_name, "language": "Py"}),
         "create_project",
     )
+    # MCP server returns {"project": {"projectId": int, ...}, "status": "success"}
     project = result.get("project", {})
-    project_id = (
-        project.get("projectId")
-        or project.get("project_id")
-        or result.get("projectId")
-        or result.get("project_id")
-    )
+    project_id = project.get("projectId") or project.get("project_id")
     if not project_id:
         raise RuntimeError(
             f"[qc_upload_eval] create_project MCP tool did not return a project_id: {result}"
@@ -365,7 +361,8 @@ def _create_backtest(project_id: int, spec_name: str) -> str:
         _mcp_tool_call("create_compile", {"project_id": project_id}),
         "create_compile",
     )
-    compile_id: str = compile_result.get("compile_id") or compile_result.get("compileId", "")
+    # MCP server returns {"compile_id": str, "state": str, "status": "success"}
+    compile_id: str = compile_result.get("compile_id", "")
     if not compile_id:
         raise RuntimeError(
             f"[qc_upload_eval] create_compile did not return compile_id: {compile_result}"
@@ -412,11 +409,8 @@ def _create_backtest(project_id: int, spec_name: str) -> str:
         "create_backtest",
     )
     backtest = backtest_result.get("backtest", {})
-    backtest_id = (
-        backtest.get("backtestId")
-        or backtest.get("backtest_id")
-        or backtest_result.get("backtest_id")
-    )
+    # MCP server returns {"backtest": {"backtestId": str, ...}, "status": "success"}
+    backtest_id = backtest.get("backtestId")
     if not backtest_id:
         raise RuntimeError(
             f"[qc_upload_eval] create_backtest did not return a backtest_id: {backtest_result}"
@@ -462,7 +456,12 @@ def _poll_backtest(project_id: int, backtest_id: str) -> dict[str, Any]:
 
 
 def _get_backtest_orders(project_id: int, backtest_id: str) -> int:
-    """Return the raw order count for a backtest via MCP read_backtest_orders.
+    """Return the total order count for a backtest via MCP read_backtest_orders.
+
+    Requests the first page (start=0, end=100) to satisfy the ≤100 pagination
+    constraint enforced by the MCP server.  The ``length`` field returned by the
+    API is the *total* order count across all pages, so the result is accurate
+    even when a backtest generated more than 100 orders.
 
     Returns 0 on any error (e.g., data retention expiry) — used as a quality
     signal only; does not affect pass/fail evaluation.
