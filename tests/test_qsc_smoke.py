@@ -11,6 +11,7 @@ All tests use only stdlib + pytest.
 """
 
 import json
+import importlib
 import subprocess
 import sys
 from pathlib import Path
@@ -340,3 +341,27 @@ class TestGenerateGrinderSummarySmoke:
     def test_summary_has_failures_section(self, tmp_path):
         summary = generate_grinder_summary.generate_summary(SMOKE_RECORDS)
         assert "Failures for Mia2 Escalation" in summary
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Environment / dependency regression tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_python_version_meets_quantconnect_mcp_requirement():
+    """quantconnect-mcp requires Python >=3.12. Fail fast if runner is misconfigured."""
+    assert sys.version_info >= (3, 12), (
+        f"Python >=3.12 required for quantconnect-mcp. "
+        f"Current: {sys.version_info.major}.{sys.version_info.minor}"
+    )
+
+
+def test_quantconnect_mcp_importable():
+    """quantconnect-mcp must be importable — catches pip install failures before grinder runs."""
+    try:
+        importlib.import_module("quantconnect_mcp")
+    except ImportError as e:
+        raise AssertionError(
+            f"quantconnect-mcp is not installed or not importable: {e}. "
+            f"Ensure python-version: '3.12' in all workflow jobs."
+        ) from e
