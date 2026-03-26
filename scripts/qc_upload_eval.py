@@ -54,6 +54,8 @@ _COMPILE_POLL_INTERVAL_SECONDS: int = 5   # seconds between compile status polls
 _COMPILE_POLL_MAX_ATTEMPTS: int = 30      # max compile polls (150s timeout)
 _REQUEST_TIMEOUT_SECONDS: int = 30
 _MCP_REQUEST_TIMEOUT_SECONDS: float = 60.0
+_BACKTEST_CREATE_RETRY_MAX: int = 6       # max node-availability polls before giving up
+_BACKTEST_CREATE_RETRY_WAIT: int = 30     # seconds between node-availability polls
 
 # Module-level MCP session state — set by _ensure_mcp_session() on first use
 _mcp_session_id: str = ""
@@ -371,6 +373,58 @@ def _upload_strategy(project_id: int, spec_name: str, strategy_code: str) -> Non
 
 
 
+def _wait_for_free_node(
+    project_id: int,
+    timeout: int = _BACKTEST_CREATE_RETRY_MAX * _BACKTEST_CREATE_RETRY_WAIT,
+    poll_interval: int = _BACKTEST_CREATE_RETRY_WAIT,
+) -> tuple[bool, str | None]:
+    """Poll read_backtests until no Running backtest occupies the single node.
+
+    Returns:
+        (True, None)        — a free node is available
+        (False, None)       — timeout reached with node still busy
+        (False, error_str)  — read_backtests failed persistently (last exception message)
+    """
+    deadline = time.monotonic() + timeout
+    last_error: str | None = None
+    while time.monotonic() < deadline:
+        try:
+            bt_resp = _parse_tool_json(
+                _mcp_tool_call("read_backtests", {"project_id": project_id}),
+                "read_backtests",
+            )
+        except Exception as exc:
+            last_error = str(exc)
+            print(f"[qc_upload_eval] read_backtests error (will retry): {exc}")
+            time.sleep(poll_interval)
+            continue
+
+        if bt_resp.get("status") != "success":
+            print(
+                f"[qc_upload_eval] read_backtests non-success status "
+                f"{bt_resp.get('status')!r}; retrying…"
+            )
+            time.sleep(poll_interval)
+            continue
+
+        backtests = bt_resp.get("backtests", [])
+        running = [
+            b for b in backtests
+            if isinstance(b, dict) and b.get("status") == "Running"
+        ]
+        if not running:
+            return True, None
+
+        remaining = deadline - time.monotonic()
+        print(
+            f"[qc_upload_eval] Backtest node busy ({len(running)} running); "
+            f"waiting {poll_interval}s ({remaining:.0f}s remaining)…"
+        )
+        time.sleep(poll_interval)
+
+    return False, last_error
+
+
 def _create_backtest(project_id: int, spec_name: str) -> str:
     """Compile the project and trigger a backtest via MCP; return the backtest_id."""
     # Step 1: start compilation via MCP compile_project tool
@@ -413,7 +467,21 @@ def _create_backtest(project_id: int, spec_name: str) -> str:
             f"{_COMPILE_POLL_MAX_ATTEMPTS * _COMPILE_POLL_INTERVAL_SECONDS} seconds"
         )
 
-    # Step 3: create backtest (node serialization handled by max-parallel: 1 in workflow)
+    # Step 3: wait for a free backtest node before submitting
+    node_free, node_error = _wait_for_free_node(project_id)
+    if not node_free:
+        if node_error is not None:
+            raise RuntimeError(
+                f"[qc_upload_eval] read_backtests failed repeatedly while waiting for "
+                f"a free node: {node_error}"
+            )
+        raise RuntimeError(
+            f"[qc_upload_eval] No free backtest node available after "
+            f"{_BACKTEST_CREATE_RETRY_MAX * _BACKTEST_CREATE_RETRY_WAIT}s — "
+            f"project_id={project_id}"
+        )
+
+    # Step 4: create backtest
     backtest_result = _parse_tool_json(
         _mcp_tool_call(
             "create_backtest",
