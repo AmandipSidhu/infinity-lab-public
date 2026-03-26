@@ -127,7 +127,7 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 1
       matrix:
         prompt: ${{ fromJson(needs.parse-prompts.outputs.priority_prompts) }}
     steps:
@@ -282,7 +282,7 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 1
       matrix:
         prompt: ${{ fromJson(needs.parse-prompts.outputs.independent_prompts) }}
     steps:

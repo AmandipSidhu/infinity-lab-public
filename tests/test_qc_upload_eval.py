@@ -473,10 +473,14 @@ class TestWaitForCompile:
             "status": "success",
             "backtest": {"backtestId": "bt-abc"},
         })}]}}
+        read_backtests_resp = {"result": {"content": [{"type": "text", "text": json.dumps({
+            "status": "success", "backtests": [],
+        })}]}}
 
         call_responses = {
             "compile_project": compile_resp,
             "read_compilation_result": read_compile_resp,
+            "read_backtests": read_backtests_resp,
             "create_backtest": create_bt_resp,
         }
 

@@ -54,6 +54,8 @@ _COMPILE_POLL_INTERVAL_SECONDS: int = 5   # seconds between compile status polls
 _COMPILE_POLL_MAX_ATTEMPTS: int = 30      # max compile polls (150s timeout)
 _REQUEST_TIMEOUT_SECONDS: int = 30
 _MCP_REQUEST_TIMEOUT_SECONDS: float = 60.0
+_NODE_WAIT_TIMEOUT_SECONDS: int = 300     # max wait for a free backtest node
+_NODE_WAIT_POLL_INTERVAL_SECONDS: int = 10  # seconds between node-availability polls
 
 # Module-level MCP session state — set by _ensure_mcp_session() on first use
 _mcp_session_id: str = ""
@@ -354,6 +356,56 @@ def _upload_strategy(project_id: int, spec_name: str, strategy_code: str) -> Non
     )
 
 
+def _wait_for_free_node(
+    project_id: int,
+    timeout: int = _NODE_WAIT_TIMEOUT_SECONDS,
+    poll_interval: int = _NODE_WAIT_POLL_INTERVAL_SECONDS,
+) -> bool:
+    """Wait until no backtests are Running on this project before submitting.
+
+    Polls ``read_backtests`` every ``poll_interval`` seconds for up to ``timeout``
+    seconds.  Returns ``True`` when the node is free, ``False`` on timeout.
+
+    Single-node QC accounts (1 × B2-8 Backtest Node) reject concurrent
+    ``create_backtest`` calls with "no spare nodes available".  Calling this
+    function before every ``create_backtest`` ensures only one backtest runs at
+    a time even when the GitHub Actions matrix serialisation (``max-parallel: 1``)
+    is bypassed for any reason.
+    """
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        try:
+            result = _parse_tool_json(
+                _mcp_tool_call("read_backtests", {"project_id": project_id}),
+                "read_backtests",
+            )
+        except RuntimeError as exc:
+            print(
+                f"[qc_upload_eval] _wait_for_free_node: read_backtests error (attempt {attempt}): {exc}",
+                file=sys.stderr,
+            )
+            time.sleep(poll_interval)
+            continue
+        backtests = result.get("backtests", [])
+        # read_backtests MCP tool returns either a list of backtest objects or a
+        # dict keyed by backtest_id depending on the quantconnect-mcp server version.
+        if isinstance(backtests, dict):
+            backtests = list(backtests.values())
+        # QC backtest status is "Running" while in progress (case preserved by QC API).
+        running = [b for b in backtests if str(b.get("status", "")).lower() == "running"]
+        if not running:
+            return True
+        print(
+            f"[qc_upload_eval] Waiting for free backtest node — "
+            f"{len(running)} backtest(s) still running (attempt {attempt}, "
+            f"{int(deadline - time.monotonic())}s remaining)…"
+        )
+        time.sleep(poll_interval)
+    return False
+
+
 def _create_backtest(project_id: int, spec_name: str) -> str:
     """Compile the project and trigger a backtest via MCP; return the backtest_id."""
     # Step 1: start compilation via MCP compile_project tool
@@ -396,7 +448,13 @@ def _create_backtest(project_id: int, spec_name: str) -> str:
             f"{_COMPILE_POLL_MAX_ATTEMPTS * _COMPILE_POLL_INTERVAL_SECONDS} seconds"
         )
 
-    # Step 3: create backtest
+    # Step 3: wait for a free node, then create backtest
+    if not _wait_for_free_node(project_id):
+        raise RuntimeError(
+            f"[qc_upload_eval] No free backtest node available after "
+            f"{_NODE_WAIT_TIMEOUT_SECONDS}s — aborting '{spec_name}'. "
+            "Stop any running backtests or add more compute nodes."
+        )
     backtest_result = _parse_tool_json(
         _mcp_tool_call(
             "create_backtest",
