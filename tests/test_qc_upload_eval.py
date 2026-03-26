@@ -462,7 +462,7 @@ class TestWaitForCompile:
                 assert mock_time.sleep.call_count == 2  # slept twice before success
 
     def test_create_backtest_uses_mcp_tools(self) -> None:
-        """_create_backtest calls MCP create_compile, read_compile, create_backtest tools."""
+        """_create_backtest calls MCP compile_project, read_compilation_result, create_backtest tools."""
         compile_resp = {"result": {"content": [{"type": "text", "text": json.dumps({
             "status": "success", "compile_id": "compile-xyz", "state": "BuildSuccess",
         })}]}}
@@ -475,8 +475,8 @@ class TestWaitForCompile:
         })}]}}
 
         call_responses = {
-            "create_compile": compile_resp,
-            "read_compile": read_compile_resp,
+            "compile_project": compile_resp,
+            "read_compilation_result": read_compile_resp,
             "create_backtest": create_bt_resp,
         }
 

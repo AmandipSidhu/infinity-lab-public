@@ -356,26 +356,26 @@ def _upload_strategy(project_id: int, spec_name: str, strategy_code: str) -> Non
 
 def _create_backtest(project_id: int, spec_name: str) -> str:
     """Compile the project and trigger a backtest via MCP; return the backtest_id."""
-    # Step 1: start compilation
+    # Step 1: start compilation via MCP compile_project tool
     compile_result = _parse_tool_json(
-        _mcp_tool_call("create_compile", {"project_id": project_id}),
-        "create_compile",
+        _mcp_tool_call("compile_project", {"project_id": project_id}),
+        "compile_project",
     )
     # MCP server returns {"compile_id": str, "state": str, "status": "success"}
     compile_id: str = compile_result.get("compile_id", "")
     if not compile_id:
         raise RuntimeError(
-            f"[qc_upload_eval] create_compile did not return compile_id: {compile_result}"
+            f"[qc_upload_eval] compile_project did not return compile_id: {compile_result}"
         )
 
-    # Step 2: poll until BuildSuccess
+    # Step 2: poll via read_compilation_result until BuildSuccess
     for attempt in range(1, _COMPILE_POLL_MAX_ATTEMPTS + 1):
         read_result = _parse_tool_json(
             _mcp_tool_call(
-                "read_compile",
+                "read_compilation_result",
                 {"project_id": project_id, "compile_id": compile_id},
             ),
-            "read_compile",
+            "read_compilation_result",
         )
         state: str = str(read_result.get("state", ""))
         if state == "BuildSuccess":
