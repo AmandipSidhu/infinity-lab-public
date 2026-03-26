@@ -360,20 +360,24 @@ def _wait_for_free_node(
     project_id: int,
     timeout: int = _NODE_WAIT_TIMEOUT_SECONDS,
     poll_interval: int = _NODE_WAIT_POLL_INTERVAL_SECONDS,
-) -> bool:
+) -> tuple[bool, str | None]:
     """Wait until no backtests are Running on this project before submitting.
 
     Polls ``read_backtests`` every ``poll_interval`` seconds for up to ``timeout``
-    seconds.  Returns ``True`` when the node is free, ``False`` on timeout.
+    seconds.  Returns ``(True, None)`` when the node is free for this project, or
+    ``(False, reason)`` on timeout where *reason* explains whether the timeout was
+    caused by persistent MCP/API query failures or by a genuinely busy node.
 
     Single-node QC accounts (1 × B2-8 Backtest Node) reject concurrent
     ``create_backtest`` calls with "no spare nodes available".  Calling this
-    function before every ``create_backtest`` ensures only one backtest runs at
-    a time even when the GitHub Actions matrix serialisation (``max-parallel: 1``)
-    is bypassed for any reason.
+    function before every ``create_backtest`` provides a per-project safeguard
+    so only one backtest for the given ``project_id`` runs at a time via this
+    script, even when the GitHub Actions matrix serialisation (``max-parallel: 1``)
+    is bypassed.  Backtests from other projects may still consume the shared node.
     """
     deadline = time.monotonic() + timeout
     attempt = 0
+    last_read_error: str | None = None
     while time.monotonic() < deadline:
         attempt += 1
         try:
@@ -382,12 +386,24 @@ def _wait_for_free_node(
                 "read_backtests",
             )
         except RuntimeError as exc:
+            last_read_error = str(exc)
             print(
                 f"[qc_upload_eval] _wait_for_free_node: read_backtests error (attempt {attempt}): {exc}",
                 file=sys.stderr,
             )
             time.sleep(poll_interval)
             continue
+        # Validate tool-level status; non-success responses are treated as transient.
+        tool_status = result.get("status", "success")
+        if str(tool_status).lower() != "success":
+            last_read_error = f"read_backtests returned status={tool_status!r}"
+            print(
+                f"[qc_upload_eval] _wait_for_free_node: {last_read_error} (attempt {attempt})",
+                file=sys.stderr,
+            )
+            time.sleep(poll_interval)
+            continue
+        last_read_error = None
         backtests = result.get("backtests", [])
         # read_backtests MCP tool returns either a list of backtest objects or a
         # dict keyed by backtest_id depending on the quantconnect-mcp server version.
@@ -396,14 +412,14 @@ def _wait_for_free_node(
         # QC backtest status is "Running" while in progress (case preserved by QC API).
         running = [b for b in backtests if str(b.get("status", "")).lower() == "running"]
         if not running:
-            return True
+            return True, None
         print(
             f"[qc_upload_eval] Waiting for free backtest node — "
             f"{len(running)} backtest(s) still running (attempt {attempt}, "
             f"{int(deadline - time.monotonic())}s remaining)…"
         )
         time.sleep(poll_interval)
-    return False
+    return False, last_read_error
 
 
 def _create_backtest(project_id: int, spec_name: str) -> str:
@@ -449,7 +465,14 @@ def _create_backtest(project_id: int, spec_name: str) -> str:
         )
 
     # Step 3: wait for a free node, then create backtest
-    if not _wait_for_free_node(project_id):
+    node_free, wait_error = _wait_for_free_node(project_id)
+    if not node_free:
+        if wait_error:
+            raise RuntimeError(
+                f"[qc_upload_eval] Could not verify node availability for '{spec_name}' after "
+                f"{_NODE_WAIT_TIMEOUT_SECONDS}s — read_backtests failed repeatedly. "
+                f"Last error: {wait_error}"
+            )
         raise RuntimeError(
             f"[qc_upload_eval] No free backtest node available after "
             f"{_NODE_WAIT_TIMEOUT_SECONDS}s — aborting '{spec_name}'. "

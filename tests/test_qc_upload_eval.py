@@ -31,6 +31,7 @@ from qc_upload_eval import (  # noqa: E402
     _poll_backtest,
     _upload_strategy,
     _wait_for_compile,
+    _wait_for_free_node,
     evaluate_fitness,
     main,
     upload_and_evaluate,
@@ -489,3 +490,114 @@ class TestWaitForCompile:
             backtest_id = _create_backtest(99, "my_spec")
 
         assert backtest_id == "bt-abc"
+
+
+# ---------------------------------------------------------------------------
+# TestWaitForFreeNode
+# ---------------------------------------------------------------------------
+
+
+class TestWaitForFreeNode:
+    """Tests for _wait_for_free_node() node-availability polling."""
+
+    def _make_bt_resp(self, backtests: list) -> dict:
+        return {"result": {"content": [{"type": "text", "text": json.dumps({
+            "status": "success", "backtests": backtests,
+        })}]}}
+
+    def test_returns_true_immediately_when_no_backtests(self) -> None:
+        """Returns (True, None) immediately if read_backtests returns empty list."""
+        resp = self._make_bt_resp([])
+        with patch.object(qc_upload_eval, "_mcp_tool_call", return_value=resp):
+            with patch.object(qc_upload_eval, "time") as mock_time:
+                mock_time.monotonic.side_effect = [0.0, 0.0]
+                mock_time.sleep = MagicMock()
+                result, error = _wait_for_free_node(42, timeout=30, poll_interval=5)
+        assert result is True
+        assert error is None
+        mock_time.sleep.assert_not_called()
+
+    def test_polls_until_backtest_finishes(self) -> None:
+        """Sleeps once when a Running backtest exists, then returns True when it clears."""
+        running_resp = self._make_bt_resp([{"status": "Running", "backtestId": "bt-1"}])
+        done_resp = self._make_bt_resp([{"status": "Completed", "backtestId": "bt-1"}])
+        responses = iter([running_resp, done_resp])
+        with patch.object(qc_upload_eval, "_mcp_tool_call", side_effect=lambda *a, **kw: next(responses)):
+            with patch.object(qc_upload_eval, "time") as mock_time:
+                mock_time.monotonic.side_effect = [0.0, 0.0, 5.0, 5.0]
+                mock_time.sleep = MagicMock()
+                result, error = _wait_for_free_node(42, timeout=30, poll_interval=5)
+        assert result is True
+        assert error is None
+        assert mock_time.sleep.call_count == 1
+
+    def test_returns_false_on_node_busy_timeout(self) -> None:
+        """Returns (False, None) after timeout when node stays busy."""
+        running_resp = self._make_bt_resp([{"status": "Running", "backtestId": "bt-x"}])
+        with patch.object(qc_upload_eval, "_mcp_tool_call", return_value=running_resp):
+            with patch.object(qc_upload_eval, "time") as mock_time:
+                # deadline=0+30=30; while(5<30)=True → read running → print(30-5=25) → sleep; while(35<30)=False
+                mock_time.monotonic.side_effect = [0.0, 5.0, 5.0, 35.0]
+                mock_time.sleep = MagicMock()
+                result, error = _wait_for_free_node(42, timeout=30, poll_interval=5)
+        assert result is False
+        assert error is None  # busy node, not a query error
+
+    def test_returns_false_with_error_on_persistent_mcp_failure(self) -> None:
+        """Returns (False, last_error) when read_backtests always raises."""
+        with patch.object(
+            qc_upload_eval, "_mcp_tool_call",
+            side_effect=RuntimeError("MCP server unavailable"),
+        ):
+            with patch.object(qc_upload_eval, "time") as mock_time:
+                mock_time.monotonic.side_effect = [0.0, 0.0, 5.0, 5.0, 30.0]
+                mock_time.sleep = MagicMock()
+                result, error = _wait_for_free_node(42, timeout=30, poll_interval=5)
+        assert result is False
+        assert error is not None
+        assert "MCP server unavailable" in error
+
+    def test_non_success_status_treated_as_transient(self) -> None:
+        """A non-success status field is retried, not silently treated as no backtests."""
+        error_resp = {"result": {"content": [{"type": "text", "text": json.dumps({
+            "status": "error", "message": "project not found",
+        })}]}}
+        clear_resp = self._make_bt_resp([])
+        responses = iter([error_resp, clear_resp])
+        with patch.object(qc_upload_eval, "_mcp_tool_call", side_effect=lambda *a, **kw: next(responses)):
+            with patch.object(qc_upload_eval, "time") as mock_time:
+                mock_time.monotonic.side_effect = [0.0, 0.0, 5.0, 5.0]
+                mock_time.sleep = MagicMock()
+                result, error = _wait_for_free_node(42, timeout=30, poll_interval=5)
+        assert result is True
+        assert error is None
+        # Slept once after the error response before getting the clear one
+        assert mock_time.sleep.call_count == 1
+
+    def test_create_backtest_error_message_distinguishes_mcp_failure(self) -> None:
+        """_create_backtest raises a distinct error when wait timed out due to MCP failures."""
+        compile_resp = {"result": {"content": [{"type": "text", "text": json.dumps({
+            "status": "success", "compile_id": "c1", "state": "BuildSuccess",
+        })}]}}
+
+        with patch.object(qc_upload_eval, "_mcp_tool_call", side_effect=lambda name, args, req_id=1: compile_resp):
+            with patch.object(
+                qc_upload_eval, "_wait_for_free_node",
+                return_value=(False, "MCP server unavailable"),
+            ):
+                with pytest.raises(RuntimeError, match="read_backtests failed repeatedly"):
+                    _create_backtest(99, "my_spec")
+
+    def test_create_backtest_error_message_on_node_busy_timeout(self) -> None:
+        """_create_backtest raises a 'no free node' error when the node is genuinely busy."""
+        compile_resp = {"result": {"content": [{"type": "text", "text": json.dumps({
+            "status": "success", "compile_id": "c1", "state": "BuildSuccess",
+        })}]}}
+
+        with patch.object(qc_upload_eval, "_mcp_tool_call", side_effect=lambda name, args, req_id=1: compile_resp):
+            with patch.object(
+                qc_upload_eval, "_wait_for_free_node",
+                return_value=(False, None),
+            ):
+                with pytest.raises(RuntimeError, match="No free backtest node"):
+                    _create_backtest(99, "my_spec")
