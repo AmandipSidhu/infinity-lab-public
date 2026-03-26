@@ -26,6 +26,8 @@ from qc_upload_eval import (  # noqa: E402
     _create_backtest,
     _create_project,
     _extract_stat,
+    _get_backtest_orders,
+    _mcp_tool_call,
     _poll_backtest,
     _upload_strategy,
     _wait_for_compile,
@@ -234,13 +236,15 @@ class TestUploadAndEvaluate:
             with patch.object(qc_upload_eval, "_upload_strategy"):
                 with patch.object(qc_upload_eval, "_create_backtest", return_value="bt123"):
                     with patch.object(qc_upload_eval, "_poll_backtest", return_value=backtest_result):
-                        summary = upload_and_evaluate(spec_file, strategy_file)
+                        with patch.object(qc_upload_eval, "_get_backtest_orders", return_value=100):
+                            summary = upload_and_evaluate(spec_file, strategy_file)
 
         assert summary["result"] == "PASS"
         assert summary["passed"] is True
         assert summary["project_id"] == 42
         assert summary["backtest_id"] == "bt123"
         assert summary["violations"] == []
+        assert summary["total_orders"] == 100
 
     def test_returns_fail_when_sharpe_low(self, tmp_path: Path) -> None:
         spec_file = _make_spec(tmp_path, min_trades=50)
@@ -255,7 +259,8 @@ class TestUploadAndEvaluate:
             with patch.object(qc_upload_eval, "_upload_strategy"):
                 with patch.object(qc_upload_eval, "_create_backtest", return_value="bt1"):
                     with patch.object(qc_upload_eval, "_poll_backtest", return_value=backtest_result):
-                        summary = upload_and_evaluate(spec_file, strategy_file)
+                        with patch.object(qc_upload_eval, "_get_backtest_orders", return_value=0):
+                            summary = upload_and_evaluate(spec_file, strategy_file)
 
         assert summary["result"] == "FAIL"
         assert summary["passed"] is False
@@ -275,10 +280,12 @@ class TestUploadAndEvaluate:
             with patch.object(qc_upload_eval, "_upload_strategy"):
                 with patch.object(qc_upload_eval, "_create_backtest", return_value="bt7"):
                     with patch.object(qc_upload_eval, "_poll_backtest", return_value=backtest_result):
-                        summary = upload_and_evaluate(spec_file, strategy_file)
+                        with patch.object(qc_upload_eval, "_get_backtest_orders", return_value=5):
+                            summary = upload_and_evaluate(spec_file, strategy_file)
 
         for key in ("result", "passed", "violations", "backtest_stats", "project_id",
-                    "backtest_id", "violation_count", "spec_file", "strategy_file"):
+                    "backtest_id", "violation_count", "spec_file", "strategy_file",
+                    "sharpe_ratio", "total_orders"):
             assert key in summary, f"Missing key: {key}"
         # Validate types expected by human_review_artifacts.py
         assert isinstance(summary["result"], str)
@@ -362,8 +369,9 @@ class TestCLI:
             with patch.object(qc_upload_eval, "_upload_strategy"):
                 with patch.object(qc_upload_eval, "_create_backtest", return_value="bt1"):
                     with patch.object(qc_upload_eval, "_poll_backtest", return_value=backtest_result):
-                        rc = main(["--spec", str(spec_file), "--strategy", str(strategy_file),
-                                   "--output", str(out_file)])
+                        with patch.object(qc_upload_eval, "_get_backtest_orders", return_value=50):
+                            rc = main(["--spec", str(spec_file), "--strategy", str(strategy_file),
+                                       "--output", str(out_file)])
 
         assert out_file.exists()
         data = json.loads(out_file.read_text())
@@ -453,16 +461,27 @@ class TestWaitForCompile:
                 _wait_for_compile(42, "abc123")  # should not raise
                 assert mock_time.sleep.call_count == 2  # slept twice before success
 
-    def test_create_backtest_calls_wait_for_compile(self) -> None:
-        """_create_backtest calls _wait_for_compile before backtests/create."""
-        with patch.object(qc_upload_eval, "_compile_project", return_value="compile-xyz"):
-            with patch.object(qc_upload_eval, "_wait_for_compile") as mock_wait:
-                with patch.object(
-                    qc_upload_eval,
-                    "_qc_post",
-                    return_value={"backtest": {"backtestId": "bt-abc"}, "success": True},
-                ):
-                    backtest_id = _create_backtest(99, "my_spec")
+    def test_create_backtest_uses_mcp_tools(self) -> None:
+        """_create_backtest calls MCP create_compile, read_compile, create_backtest tools."""
+        compile_resp = {"result": {"content": [{"type": "text", "text": json.dumps({
+            "status": "success", "compile_id": "compile-xyz", "state": "BuildSuccess",
+        })}]}}
+        read_compile_resp = {"result": {"content": [{"type": "text", "text": json.dumps({
+            "status": "success", "state": "BuildSuccess",
+        })}]}}
+        create_bt_resp = {"result": {"content": [{"type": "text", "text": json.dumps({
+            "status": "success",
+            "backtest": {"backtestId": "bt-abc"},
+        })}]}}
 
-        mock_wait.assert_called_once_with(99, "compile-xyz")
+        call_responses = {
+            "create_compile": compile_resp,
+            "read_compile": read_compile_resp,
+            "create_backtest": create_bt_resp,
+        }
+
+        with patch.object(qc_upload_eval, "_mcp_tool_call",
+                          side_effect=lambda name, args, req_id=1: call_responses[name]):
+            backtest_id = _create_backtest(99, "my_spec")
+
         assert backtest_id == "bt-abc"

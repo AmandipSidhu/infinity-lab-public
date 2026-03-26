@@ -144,6 +144,40 @@ jobs:
           pip install aider-chat --quiet
           pip install requests --quiet
 
+      - name: Install quantconnect-mcp
+        run: pip install quantconnect-mcp --quiet
+
+      - name: Start QC MCP Server
+        env:
+          QUANTCONNECT_USER_ID: ${{ secrets.QC_USER_ID }}
+          QUANTCONNECT_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+          MCP_TRANSPORT: streamable-http
+          MCP_HOST: 0.0.0.0
+          MCP_PORT: "8000"
+        run: |
+          quantconnect-mcp &
+          python3 - <<'PROBE'
+          import json, sys, time, urllib.request
+          url = "http://localhost:8000/mcp/"
+          payload = json.dumps({"jsonrpc": "2.0", "id": -1, "method": "initialize",
+              "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                         "clientInfo": {"name": "probe", "version": "1.0"}}}).encode()
+          last_exc = None
+          for i in range(1, 31):
+              try:
+                  req = urllib.request.Request(url, data=payload,
+                      headers={"Content-Type": "application/json",
+                               "Accept": "application/json, text/event-stream"}, method="POST")
+                  with urllib.request.urlopen(req, timeout=2) as r:
+                      if r.status in (200, 201):
+                          print(f"MCP server ready after {i}s"); sys.exit(0)
+              except Exception as exc:
+                  last_exc = exc
+              if i == 30:
+                  print(f"FAIL: MCP not ready. Last error: {last_exc}"); sys.exit(1)
+              time.sleep(1)
+          PROBE
+
       - name: Generate strategy name
         id: name
         env:
@@ -265,6 +299,40 @@ jobs:
           pip install aider-chat --quiet
           pip install requests --quiet
 
+      - name: Install quantconnect-mcp
+        run: pip install quantconnect-mcp --quiet
+
+      - name: Start QC MCP Server
+        env:
+          QUANTCONNECT_USER_ID: ${{ secrets.QC_USER_ID }}
+          QUANTCONNECT_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+          MCP_TRANSPORT: streamable-http
+          MCP_HOST: 0.0.0.0
+          MCP_PORT: "8000"
+        run: |
+          quantconnect-mcp &
+          python3 - <<'PROBE'
+          import json, sys, time, urllib.request
+          url = "http://localhost:8000/mcp/"
+          payload = json.dumps({"jsonrpc": "2.0", "id": -1, "method": "initialize",
+              "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                         "clientInfo": {"name": "probe", "version": "1.0"}}}).encode()
+          last_exc = None
+          for i in range(1, 31):
+              try:
+                  req = urllib.request.Request(url, data=payload,
+                      headers={"Content-Type": "application/json",
+                               "Accept": "application/json, text/event-stream"}, method="POST")
+                  with urllib.request.urlopen(req, timeout=2) as r:
+                      if r.status in (200, 201):
+                          print(f"MCP server ready after {i}s"); sys.exit(0)
+              except Exception as exc:
+                  last_exc = exc
+              if i == 30:
+                  print(f"FAIL: MCP not ready. Last error: {last_exc}"); sys.exit(1)
+              time.sleep(1)
+          PROBE
+
       - name: Generate strategy name
         id: name
         env:
@@ -382,6 +450,40 @@ jobs:
         run: |
           pip install aider-chat --quiet
           pip install requests --quiet
+
+      - name: Install quantconnect-mcp
+        run: pip install quantconnect-mcp --quiet
+
+      - name: Start QC MCP Server
+        env:
+          QUANTCONNECT_USER_ID: ${{ secrets.QC_USER_ID }}
+          QUANTCONNECT_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+          MCP_TRANSPORT: streamable-http
+          MCP_HOST: 0.0.0.0
+          MCP_PORT: "8000"
+        run: |
+          quantconnect-mcp &
+          python3 - <<'PROBE'
+          import json, sys, time, urllib.request
+          url = "http://localhost:8000/mcp/"
+          payload = json.dumps({"jsonrpc": "2.0", "id": -1, "method": "initialize",
+              "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                         "clientInfo": {"name": "probe", "version": "1.0"}}}).encode()
+          last_exc = None
+          for i in range(1, 31):
+              try:
+                  req = urllib.request.Request(url, data=payload,
+                      headers={"Content-Type": "application/json",
+                               "Accept": "application/json, text/event-stream"}, method="POST")
+                  with urllib.request.urlopen(req, timeout=2) as r:
+                      if r.status in (200, 201):
+                          print(f"MCP server ready after {i}s"); sys.exit(0)
+              except Exception as exc:
+                  last_exc = exc
+              if i == 30:
+                  print(f"FAIL: MCP not ready. Last error: {last_exc}"); sys.exit(1)
+              time.sleep(1)
+          PROBE
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
