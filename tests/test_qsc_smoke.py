@@ -365,3 +365,21 @@ def test_quantconnect_mcp_importable():
             f"quantconnect-mcp is not installed or not importable: {e}. "
             f"Ensure python-version: '3.12' in all workflow jobs."
         ) from e
+
+
+def test_grinder_matrix_max_parallel():
+    """Ensure all matrix jobs in qsc_grinder.yml have max-parallel: 1.
+
+    Single-node QC accounts cannot handle concurrent backtest submissions.
+    Reference: https://pypi.org/project/quantconnect-mcp/ (1 B2-8 node limit)
+    """
+    import yaml
+    wf = REPO_ROOT / ".github" / "workflows" / "qsc_grinder.yml"
+    data = yaml.safe_load(wf.read_text())
+    for job_name, job in data.get("jobs", {}).items():
+        if "matrix" in job.get("strategy", {}):
+            max_p = job.get("strategy", {}).get("max-parallel")
+            assert max_p == 1, (
+                f"Job '{job_name}' must have max-parallel: 1 for single-node QC accounts. "
+                f"Got: {max_p}"
+            )
