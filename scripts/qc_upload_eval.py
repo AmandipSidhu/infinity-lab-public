@@ -335,8 +335,24 @@ def _create_project(spec_name: str) -> int:
     project = result.get("project", {})
     project_id = project.get("projectId") or project.get("project_id")
     if not project_id:
+        # Fallback: on this account create_project may return without projectId.
+        # Recover by listing all projects and matching by name.
+        print(
+            f"[qc_upload_eval] create_project fallback: projectId absent in response, "
+            f"recovering via read_project lookup for '{spec_name}'…",
+            file=sys.stderr,
+        )
+        all_projects = _parse_tool_json(
+            _mcp_tool_call("read_project", {}),
+            "read_project",
+        )
+        for p in all_projects.get("projects", []):
+            if p.get("name") == spec_name:
+                project_id = p.get("projectId")
+                break
+    if not project_id:
         raise RuntimeError(
-            f"[qc_upload_eval] create_project MCP tool did not return a project_id: {result}"
+            f"[qc_upload_eval] Could not obtain project_id for '{spec_name}': {result}"
         )
     return int(project_id)
 
