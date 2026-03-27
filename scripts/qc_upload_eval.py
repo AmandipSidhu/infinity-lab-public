@@ -325,10 +325,29 @@ def _mcp_initialize() -> str:
 
 
 def _ensure_mcp_session() -> str:
-    """Return the current MCP session_id, initializing if needed."""
+    """Return the current MCP session_id, initializing if needed.
+
+    On first initialization, also calls ``configure_quantconnect_auth`` and
+    ``validate_quantconnect_auth`` so that all subsequent tool calls are fully
+    authenticated.  Raises ``MCPConnectionError`` if auth validation fails.
+    """
     global _mcp_session_id
     if not _mcp_session_id:
         _mcp_session_id = _mcp_initialize()
+        # Configure auth at the session level (required for streamable-HTTP transport)
+        _mcp_tool_call(
+            "configure_quantconnect_auth",
+            {"user_id": _QC_USER_ID, "api_token": _QC_API_TOKEN},
+        )
+        # Validate auth — raise MCPConnectionError so main() stub fallback handles it
+        auth_resp = _parse_tool_json(
+            _mcp_tool_call("validate_quantconnect_auth", {}),
+            "validate_quantconnect_auth",
+        )
+        if not auth_resp.get("authenticated"):
+            raise MCPConnectionError(
+                f"[qc_upload_eval] validate_quantconnect_auth failed: {auth_resp}"
+            )
     return _mcp_session_id
 
 
