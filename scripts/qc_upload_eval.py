@@ -73,6 +73,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +106,26 @@ _BACKTEST_CREATE_RETRY_WAIT: int = 30     # seconds between retries
 
 # Module-level MCP session state — set by _ensure_mcp_session() on first use
 _mcp_session_id: str = ""
+
+
+# ---------------------------------------------------------------------------
+# JSON serialization helpers
+# ---------------------------------------------------------------------------
+
+
+def _safe_serialize(obj: Any) -> str:
+    """JSON ``default`` handler that converts non-serializable values to strings.
+
+    Handles ``datetime`` objects, ``Decimal`` values, and falls back to
+    ``str()`` for any other type that is not natively JSON-serializable.
+    Used as the ``default=`` argument to ``json.dumps`` when writing output
+    that may contain QC ``datetime`` objects or ``Decimal`` statistics values.
+    """
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return str(obj)
+    return str(obj)
 
 
 # ---------------------------------------------------------------------------
@@ -835,7 +857,7 @@ def main(argv: list[str] | None = None) -> int:
     strategy_file = Path(args.strategy)
 
     def _write(data: dict[str, Any]) -> None:
-        out = json.dumps(data, indent=2)
+        out = json.dumps(data, indent=2, default=_safe_serialize)
         if args.output:
             Path(args.output).write_text(out, encoding="utf-8")
         else:

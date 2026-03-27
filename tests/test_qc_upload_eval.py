@@ -491,3 +491,119 @@ class TestWaitForCompile:
 # TestWaitForFreeNode
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# MCP envelope helper
+# ---------------------------------------------------------------------------
+
+
+def _mcp_ok(data: dict) -> dict:
+    """Wrap data in a minimal MCP JSON-RPC success envelope."""
+    return {"result": {"content": [{"type": "text", "text": json.dumps(data)}]}}
+
+
+# ---------------------------------------------------------------------------
+# TestNodeBusyRetry
+# ---------------------------------------------------------------------------
+
+
+def test_create_backtest_retries_on_node_busy(monkeypatch):
+    """create_backtest must retry on 'no spare nodes' and succeed on attempt 2."""
+    import scripts.qc_upload_eval as mod
+
+    call_count = {"n": 0}
+
+    def fake(name, arguments, req_id=1):
+        if name == "compile_project":
+            return _mcp_ok({"compile_id": "cmp_001", "state": "BuildSuccess"})
+        if name == "read_compilation_result":
+            return _mcp_ok({"state": "BuildSuccess"})
+        if name == "create_backtest":
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return _mcp_ok({"status": "error", "details": ["no spare nodes available"]})
+            return _mcp_ok({"status": "success", "backtest": {"backtestId": "bt_abc"}})
+        raise ValueError(f"unexpected: {name}")
+
+    monkeypatch.setattr(mod, "_mcp_tool_call", fake)
+    monkeypatch.setattr(mod, "_BACKTEST_CREATE_RETRY_WAIT", 0)
+    result = mod._create_backtest(project_id=1, spec_name="s")
+    assert result == "bt_abc"
+    assert call_count["n"] == 2
+
+
+def test_create_backtest_raises_after_max_retries(monkeypatch):
+    """create_backtest must raise RuntimeError after exhausting all retries."""
+    import scripts.qc_upload_eval as mod
+
+    def fake(name, arguments, req_id=1):
+        if name == "compile_project":
+            return _mcp_ok({"compile_id": "cmp_001", "state": "BuildSuccess"})
+        if name == "read_compilation_result":
+            return _mcp_ok({"state": "BuildSuccess"})
+        if name == "create_backtest":
+            return _mcp_ok({"status": "error", "details": ["no spare nodes"]})
+        raise ValueError(f"unexpected: {name}")
+
+    monkeypatch.setattr(mod, "_mcp_tool_call", fake)
+    monkeypatch.setattr(mod, "_BACKTEST_CREATE_RETRY_WAIT", 0)
+    with pytest.raises(RuntimeError, match="no spare nodes"):
+        mod._create_backtest(project_id=1, spec_name="s")
+
+
+# ---------------------------------------------------------------------------
+# TestCreateProjectFallback
+# ---------------------------------------------------------------------------
+
+
+def test_create_project_fallback_on_missing_project_id(monkeypatch):
+    """create_project must recover via read_project list when projectId absent."""
+    import scripts.qc_upload_eval as mod
+
+    def fake(name, arguments, req_id=1):
+        if name == "create_project":
+            return _mcp_ok({"project": {}, "status": "success"})
+        if name == "read_project":
+            return _mcp_ok({"projects": [
+                {"name": "target", "projectId": 77},
+                {"name": "other", "projectId": 99},
+            ]})
+        raise ValueError(f"unexpected: {name}")
+
+    monkeypatch.setattr(mod, "_mcp_tool_call", fake)
+    assert mod._create_project("target") == 77
+
+
+def test_create_project_raises_when_fallback_empty(monkeypatch):
+    """create_project must raise RuntimeError if project not found in fallback list."""
+    import scripts.qc_upload_eval as mod
+
+    def fake(name, arguments, req_id=1):
+        if name == "create_project":
+            return _mcp_ok({"project": {}, "status": "success"})
+        if name == "read_project":
+            return _mcp_ok({"projects": []})
+        raise ValueError(f"unexpected: {name}")
+
+    monkeypatch.setattr(mod, "_mcp_tool_call", fake)
+    with pytest.raises(RuntimeError, match="Could not obtain project_id"):
+        mod._create_project("target")
+
+
+# ---------------------------------------------------------------------------
+# TestSafeSerialize
+# ---------------------------------------------------------------------------
+
+
+def test_safe_serialize_handles_datetime_and_decimal():
+    """_safe_serialize must handle datetime, Decimal, and fall back to str()."""
+    import scripts.qc_upload_eval as mod
+    from decimal import Decimal
+    from datetime import datetime
+
+    obj = {"ts": datetime(2026, 1, 1, 12, 0, 0), "val": Decimal("1.23"), "ok": 42}
+    serialized = json.dumps(obj, default=mod._safe_serialize)
+    parsed = json.loads(serialized)
+    assert parsed["ok"] == 42
+    assert isinstance(parsed["ts"], str)
+    assert isinstance(parsed["val"], str)
+
