@@ -4,15 +4,16 @@
 # Tags: [PRIORITY], [INDEPENDENT], [IF-PREVIOUS-PASSED], [LOW-PRIORITY]
 #
 # Push this file to trigger the QSC grinder workflow.
-# Last triggered: 2026-03-27 1:36PM PST
+# Last triggered: 2026-03-27 3:26PM PST
 
 ## [PRIORITY] Validate and Backtest
 
-Check this code for proper syntax and run a backtest on it and present the sharpe ration
+Check this code for proper syntax and run a backtest on it and present the sharpe ratio
 
 from AlgorithmImports import *
+from datetime import time
 
-class OpeningRangeBreakout(QCAlgorithm):
+class OpeningRangeBreakoutAlgorithm(QCAlgorithm):
 
     def initialize(self):
         self.set_start_date(2016, 1, 1)
