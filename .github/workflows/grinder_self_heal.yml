@@ -1,0 +1,183 @@
+name: Grinder Self-Heal
+
+on:
+  workflow_run:
+    workflows:
+      - "QSC Grinder"
+    types:
+      - completed
+
+permissions:
+  issues: write
+  actions: read
+  contents: read
+
+jobs:
+  self-heal:
+    name: Create failure issue and commit comment
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+
+    steps:
+      - name: Create issue and post commit comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runId   = context.payload.workflow_run.id;
+            const runUrl  = context.payload.workflow_run.html_url;
+            const headSha = context.payload.workflow_run.head_sha;
+            const repo    = context.repo;
+
+            // ── 1. Fetch logs ──────────────────────────────────────────────
+            const LOG_LIMIT = 6000;
+            let logText = '';
+            try {
+              // download_url returns a redirect to a zip; use the list-jobs
+              // endpoint to gather per-step annotations instead, which are
+              // always available as plain text without unzipping.
+              const jobsResp = await github.rest.actions.listJobsForWorkflowRun({
+                owner: repo.owner,
+                repo:  repo.repo,
+                run_id: runId,
+                filter: 'latest',
+                per_page: 100,
+              });
+
+              const failedSteps = [];
+              for (const job of jobsResp.data.jobs) {
+                if (job.conclusion !== 'failure' && job.conclusion !== 'cancelled') {
+                  continue;
+                }
+                const jobHeader = `## Job: ${job.name} (${job.conclusion})\n`;
+                let jobBody = '';
+                for (const step of (job.steps || [])) {
+                  if (step.conclusion !== 'failure' && step.conclusion !== 'cancelled') {
+                    continue;
+                  }
+                  jobBody += `### Step: ${step.name} — ${step.conclusion}\n`;
+                }
+                // Attempt to fetch raw job log (plain text, no zip needed for individual jobs)
+                try {
+                  const logResp = await github.rest.actions.downloadJobLogsForWorkflowRun({
+                    owner: repo.owner,
+                    repo:  repo.repo,
+                    job_id: job.id,
+                  });
+                  // The GitHub API returns a 302 redirect; Octokit follows it and
+                  // returns the text in logResp.data when the response is text/plain.
+                  const raw = typeof logResp.data === 'string'
+                    ? logResp.data
+                    : JSON.stringify(logResp.data);
+                  // Keep only the last 3000 chars of each job log (per-job limit);
+                  // the overall logText is capped at LOG_LIMIT (6000 chars) below.
+                  jobBody += raw.length > 3000
+                    ? `\`\`\`\n...truncated...\n${raw.slice(-3000)}\n\`\`\``
+                    : `\`\`\`\n${raw}\n\`\`\``;
+                } catch (logErr) {
+                  jobBody += `_Log fetch failed: ${logErr.message}_\n`;
+                }
+                failedSteps.push(jobHeader + jobBody);
+              }
+
+              logText = failedSteps.join('\n---\n');
+              if (!logText) {
+                logText = '_No failed job details could be retrieved._';
+              }
+            } catch (err) {
+              logText = `_Log fetch failed: ${err.message}_`;
+            }
+
+            // Truncate overall body to LOG_LIMIT chars (suffix is 16 chars, so slice at limit-16)
+            const TRUNCATION_SUFFIX = '\n\n…(truncated)';
+            if (logText.length > LOG_LIMIT) {
+              logText = logText.slice(0, LOG_LIMIT - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+            }
+
+            // ── 2. Ensure the "bug" label exists ──────────────────────────
+            try {
+              await github.rest.issues.getLabel({
+                owner: repo.owner,
+                repo:  repo.repo,
+                name:  'bug',
+              });
+            } catch (labelErr) {
+              if (labelErr.status === 404) {
+                await github.rest.issues.createLabel({
+                  owner: repo.owner,
+                  repo:  repo.repo,
+                  name:  'bug',
+                  color: 'd73a4a',
+                  description: 'Something isn\'t working',
+                });
+              }
+            }
+
+            // ── 3. Create the GitHub Issue ────────────────────────────────
+            const issueBody = [
+              `**Workflow run:** ${runUrl}`,
+              `**Run ID:** \`${runId}\``,
+              `**Head commit:** \`${headSha}\``,
+              '',
+              '## Error logs',
+              '',
+              logText,
+              '',
+              '---',
+              '## How to fix',
+              '',
+              '1. Review the error logs above.',
+              '2. Fix the root cause in the relevant script or workflow.',
+              '3. Re-run the grinder:',
+              '   ```bash',
+              '   gh workflow run qsc_grinder.yml --repo AmandipSidhu/infinity-lab-public',
+              '   ```',
+              '4. Close this issue once the re-run succeeds.',
+            ].join('\n');
+
+            let createdIssue;
+            try {
+              const issueResp = await github.rest.issues.create({
+                owner:    repo.owner,
+                repo:     repo.repo,
+                title:    `[Auto] Grinder failed - run #${runId}`,
+                body:     issueBody,
+                labels:   ['bug'],
+                assignees: ['copilot'],
+              });
+              createdIssue = issueResp.data;
+              core.info(`Created issue #${createdIssue.number}: ${createdIssue.html_url}`);
+            } catch (issueErr) {
+              // Assignee may be rejected if copilot is not a repo collaborator;
+              // retry without the assignee so the issue is still filed.
+              core.warning(`Issue creation with assignee failed (${issueErr.message}); retrying without assignee.`);
+              const issueResp = await github.rest.issues.create({
+                owner:  repo.owner,
+                repo:   repo.repo,
+                title:  `[Auto] Grinder failed - run #${runId}`,
+                body:   issueBody,
+                labels: ['bug'],
+              });
+              createdIssue = issueResp.data;
+              core.info(`Created issue #${createdIssue.number}: ${createdIssue.html_url}`);
+            }
+
+            // ── 4. Post a commit comment ───────────────────────────────────
+            const commentBody = [
+              `🚨 **QSC Grinder failed** on [run #${runId}](${runUrl}).`,
+              '',
+              `A self-heal issue has been opened: **[#${createdIssue.number} — ${createdIssue.title}](${createdIssue.html_url})**`,
+              '',
+              'Please review the issue, fix the root cause, and re-run the workflow.',
+            ].join('\n');
+
+            try {
+              await github.rest.repos.createCommitComment({
+                owner:      repo.owner,
+                repo:       repo.repo,
+                commit_sha: headSha,
+                body:       commentBody,
+              });
+              core.info(`Commit comment posted on ${headSha}`);
+            } catch (commentErr) {
+              core.warning(`Failed to post commit comment: ${commentErr.message}`);
+            }
