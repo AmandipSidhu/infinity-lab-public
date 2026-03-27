@@ -269,6 +269,12 @@ jobs:
             output/grinder_results.jsonl
           if-no-files-found: ignore
 
+      - name: Fail job on QC error
+        if: always()
+        run: |
+          python scripts/check_qc_outcome.py \
+            --result "output/${{ steps.name.outputs.name }}_qc_result.json"
+
   # ────────────────────────────────────────────────
   # Job 3: Independent builds (parallel matrix)
   # ────────────────────────────────────────────────
@@ -407,7 +413,7 @@ jobs:
           else
             ICON="❌"
           fi
-          MSG="${ICON} ${TITLE} — aider: ${AIDER} | validate: ${VALIDATE} | qc: ${QC}"
+          MSG="${ICON} ${TITLE} — aider: ${VALIDATE} | validate: ${VALIDATE} | qc: ${QC}"
           jq -n --arg text "$MSG" '{"text": $text}' | \
             curl -s -X POST "${SLACK_WEBHOOK}" \
               -H 'Content-type: application/json' \
@@ -423,6 +429,12 @@ jobs:
             output/${{ steps.name.outputs.name }}_qc_result.json
             output/grinder_results.jsonl
           if-no-files-found: ignore
+
+      - name: Fail job on QC error
+        if: always()
+        run: |
+          python scripts/check_qc_outcome.py \
+            --result "output/${{ steps.name.outputs.name }}_qc_result.json"
 
   # ────────────────────────────────────────────────
   # Job 4: Conditional builds (sequential, check parent)
