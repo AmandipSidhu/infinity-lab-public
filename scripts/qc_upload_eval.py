@@ -462,10 +462,17 @@ def _create_backtest(project_id: int, spec_name: str) -> str:
         Retries: _BACKTEST_CREATE_RETRY_MAX attempts, _BACKTEST_CREATE_RETRY_WAIT sec apart.
     """
     # Step 1: start compilation via MCP compile_project tool
-    compile_result = _parse_tool_json(
-        _mcp_tool_call("compile_project", {"project_id": project_id}),
-        "compile_project",
+    raw_compile_resp = _mcp_tool_call("compile_project", {"project_id": project_id})
+    print(
+        f"[qc_upload_eval][DIAG] compile_project raw response: "
+        f"{json.dumps(raw_compile_resp, default=_safe_serialize)}"
     )
+    compile_result = _parse_tool_json(raw_compile_resp, "compile_project")
+    print(
+        f"[qc_upload_eval][DIAG] compile_project parsed result: "
+        f"{json.dumps(compile_result, default=_safe_serialize)}"
+    )
+
     # MCP server returns {"compile_id": str, "state": str, "status": "success"}
     compile_id: str = compile_result.get("compile_id", "")
     if not compile_id:
@@ -514,7 +521,15 @@ def _create_backtest(project_id: int, spec_name: str) -> str:
                 "backtest_name": f"{spec_name}_backtest",
             },
         )
+        print(
+            f"[qc_upload_eval][DIAG] create_backtest raw response (attempt {attempt}): "
+            f"{json.dumps(raw_resp, default=_safe_serialize)}"
+        )
         backtest_result = _parse_tool_json(raw_resp, "create_backtest")
+        print(
+            f"[qc_upload_eval][DIAG] create_backtest parsed result (attempt {attempt}): "
+            f"{json.dumps(backtest_result, default=_safe_serialize)}"
+        )
 
         # Success path: tool returned status=success with a backtest object
         if backtest_result.get("status") == "success":
