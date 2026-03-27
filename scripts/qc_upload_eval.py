@@ -406,7 +406,12 @@ def _is_node_busy_error(errors: list[Any]) -> bool:
 
 
 def _create_project(spec_name: str) -> int:
-    """Create a new QuantConnect project via MCP and return its project_id."""
+    """Create a new QuantConnect project via MCP and return its project_id.
+
+    Raises ``RuntimeError`` if project_id is missing or zero after all
+    fallback attempts. A zero project_id causes QC to reject create_backtest
+    with "Failed to create backtest: 0" — guard against it explicitly here.
+    """
     result = _parse_tool_json(
         _mcp_tool_call("create_project", {"name": spec_name, "language": "Py"}),
         "create_project",
@@ -414,11 +419,11 @@ def _create_project(spec_name: str) -> int:
     # MCP server returns {"project": {"projectId": int, ...}, "status": "success"}
     project = result.get("project", {})
     project_id = project.get("projectId") or project.get("project_id")
-    if not project_id:
+    if not project_id or int(project_id) == 0:
         # Fallback: on this account create_project may return without projectId.
         # Recover by listing all projects and matching by name.
         print(
-            f"[qc_upload_eval] create_project fallback: projectId absent in response, "
+            f"[qc_upload_eval] create_project fallback: projectId absent or zero in response, "
             f"recovering via read_project lookup for '{spec_name}'…",
             file=sys.stderr,
         )
@@ -426,13 +431,15 @@ def _create_project(spec_name: str) -> int:
             _mcp_tool_call("read_project", {}),
             "read_project",
         )
+        project_id = None
         for p in all_projects.get("projects", []):
             if p.get("name") == spec_name:
                 project_id = p.get("projectId")
                 break
-    if not project_id:
+    if not project_id or int(project_id) == 0:
         raise RuntimeError(
-            f"[qc_upload_eval] Could not obtain project_id for '{spec_name}': {result}"
+            f"[qc_upload_eval] Could not obtain a valid project_id for '{spec_name}' "
+            f"(got {project_id!r}). create_project response: {result}"
         )
     return int(project_id)
 
