@@ -191,35 +191,36 @@ jobs:
         run: |
           mkdir -p output strategies mia_context
 
-      - name: Run Aider with QC API docs
-        id: aider
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PROMPT_CONTENT: ${{ matrix.prompt.content }}
-        run: |
-          aider \
-            --model "$AIDER_MODEL" \
-            --read config/qc_api_reference.txt \
-            --read config/aider_system_prompt_qsc.txt \
-            --yes-always --no-git \
-            --file "strategies/${{ steps.name.outputs.name }}.py" \
-            --message "$PROMPT_CONTENT"
-
-      - name: Quick validation
-        id: validate
-        run: |
-          python scripts/qc_quick_validate.py "strategies/${{ steps.name.outputs.name }}.py"
-
-      - name: Submit to QuantConnect
-        id: qc
+      - name: Run grinder loop (Aider → validate → QC, up to 3 attempts)
+        id: loop
         continue-on-error: true
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
           QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+          PROMPT_CONTENT: ${{ matrix.prompt.content }}
         run: |
-          python scripts/qc_upload_eval.py \
-            --strategy "strategies/${{ steps.name.outputs.name }}.py" \
-            --output "output/${{ steps.name.outputs.name }}_qc_result.json"
+          python scripts/grinder_loop.py \
+            --name "${{ steps.name.outputs.name }}" \
+            --prompt "$PROMPT_CONTENT" \
+            --strategy-file "strategies/${{ steps.name.outputs.name }}.py" \
+            --output-dir output
+
+          # Export loop summary fields as step outputs for downstream steps
+          SUMMARY="output/${{ steps.name.outputs.name }}_loop_summary.json"
+          if [ -f "$SUMMARY" ]; then
+            echo "aider_outcome=$(python3 -c "import json,sys; d=json.load(open('$SUMMARY')); print(d.get('aider_outcome','failure'))")" >> "$GITHUB_OUTPUT"
+            echo "validate_outcome=$(python3 -c "import json,sys; d=json.load(open('$SUMMARY')); print(d.get('validate_outcome','failure'))")" >> "$GITHUB_OUTPUT"
+            echo "qc_outcome=$(python3 -c "import json,sys; d=json.load(open('$SUMMARY')); print(d.get('qc_outcome','failure'))")" >> "$GITHUB_OUTPUT"
+            echo "attempt=$(python3 -c "import json,sys; d=json.load(open('$SUMMARY')); print(d.get('total_attempts',1))")" >> "$GITHUB_OUTPUT"
+            echo "goal_met=$(python3 -c "import json,sys; d=json.load(open('$SUMMARY')); print(str(d.get('goal_met',False)).lower())")" >> "$GITHUB_OUTPUT"
+          else
+            echo "aider_outcome=failure" >> "$GITHUB_OUTPUT"
+            echo "validate_outcome=failure" >> "$GITHUB_OUTPUT"
+            echo "qc_outcome=failure" >> "$GITHUB_OUTPUT"
+            echo "attempt=1" >> "$GITHUB_OUTPUT"
+            echo "goal_met=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Log result
         if: always()
@@ -229,10 +230,12 @@ jobs:
           python scripts/log_grinder_result.py \
             --prompt "$PROMPT_CONTENT" \
             --name "${{ steps.name.outputs.name }}" \
-            --aider "${{ steps.aider.outcome }}" \
-            --validate "${{ steps.validate.outcome }}" \
+            --aider "${{ steps.loop.outputs.aider_outcome || 'failure' }}" \
+            --validate "${{ steps.loop.outputs.validate_outcome || 'failure' }}" \
             --qc-result "output/${{ steps.name.outputs.name }}_qc_result.json" \
-            --priority "PRIORITY"
+            --priority "PRIORITY" \
+            --attempt "${{ steps.loop.outputs.attempt || '1' }}" \
+            --goal-met "${{ steps.loop.outputs.goal_met || 'false' }}"
 
       - name: Notify Slack — build result
         if: always()
@@ -244,15 +247,17 @@ jobs:
             echo "SLACK_WEBHOOK not set — skipping notification"
             exit 0
           fi
-          AIDER="${{ steps.aider.outcome }}"
-          VALIDATE="${{ steps.validate.outcome }}"
-          QC="${{ steps.qc.outcome }}"
+          AIDER="${{ steps.loop.outputs.aider_outcome || 'failure' }}"
+          VALIDATE="${{ steps.loop.outputs.validate_outcome || 'failure' }}"
+          QC="${{ steps.loop.outputs.qc_outcome || 'failure' }}"
+          GOAL="${{ steps.loop.outputs.goal_met || 'false' }}"
           if [ "$AIDER" = "success" ] && [ "$VALIDATE" = "success" ] && [ "$QC" = "success" ]; then
             ICON="✅"
           else
             ICON="❌"
           fi
-          MSG="${ICON} ${TITLE} — aider: ${AIDER} | validate: ${VALIDATE} | qc: ${QC}"
+          ATTEMPTS="${{ steps.loop.outputs.attempt || '1' }}"
+          MSG="${ICON} ${TITLE} — aider: ${AIDER} | validate: ${VALIDATE} | qc: ${QC} | attempts: ${ATTEMPTS} | goal_met: ${GOAL}"
           jq -n --arg text "$MSG" '{"text": $text}' | \
             curl -s -X POST "${SLACK_WEBHOOK}" \
               -H 'Content-type: application/json' \
@@ -266,6 +271,7 @@ jobs:
           path: |
             strategies/${{ steps.name.outputs.name }}.py
             output/${{ steps.name.outputs.name }}_qc_result.json
+            output/${{ steps.name.outputs.name }}_loop_summary.json
             output/grinder_results.jsonl
           if-no-files-found: ignore
 
@@ -352,35 +358,36 @@ jobs:
         run: |
           mkdir -p output strategies mia_context
 
-      - name: Run Aider with QC API docs
-        id: aider
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PROMPT_CONTENT: ${{ matrix.prompt.content }}
-        run: |
-          aider \
-            --model "$AIDER_MODEL" \
-            --read config/qc_api_reference.txt \
-            --read config/aider_system_prompt_qsc.txt \
-            --yes-always --no-git \
-            --file "strategies/${{ steps.name.outputs.name }}.py" \
-            --message "$PROMPT_CONTENT"
-
-      - name: Quick validation
-        id: validate
-        run: |
-          python scripts/qc_quick_validate.py "strategies/${{ steps.name.outputs.name }}.py"
-
-      - name: Submit to QuantConnect
-        id: qc
+      - name: Run grinder loop (Aider → validate → QC, up to 3 attempts)
+        id: loop
         continue-on-error: true
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           QC_USER_ID: ${{ secrets.QC_USER_ID }}
           QC_API_TOKEN: ${{ secrets.QC_API_TOKEN }}
+          PROMPT_CONTENT: ${{ matrix.prompt.content }}
         run: |
-          python scripts/qc_upload_eval.py \
-            --strategy "strategies/${{ steps.name.outputs.name }}.py" \
-            --output "output/${{ steps.name.outputs.name }}_qc_result.json"
+          python scripts/grinder_loop.py \
+            --name "${{ steps.name.outputs.name }}" \
+            --prompt "$PROMPT_CONTENT" \
+            --strategy-file "strategies/${{ steps.name.outputs.name }}.py" \
+            --output-dir output
+
+          # Export loop summary fields as step outputs for downstream steps
+          SUMMARY="output/${{ steps.name.outputs.name }}_loop_summary.json"
+          if [ -f "$SUMMARY" ]; then
+            echo "aider_outcome=$(python3 -c "import json,sys; d=json.load(open('$SUMMARY')); print(d.get('aider_outcome','failure'))")" >> "$GITHUB_OUTPUT"
+            echo "validate_outcome=$(python3 -c "import json,sys; d=json.load(open('$SUMMARY')); print(d.get('validate_outcome','failure'))")" >> "$GITHUB_OUTPUT"
+            echo "qc_outcome=$(python3 -c "import json,sys; d=json.load(open('$SUMMARY')); print(d.get('qc_outcome','failure'))")" >> "$GITHUB_OUTPUT"
+            echo "attempt=$(python3 -c "import json,sys; d=json.load(open('$SUMMARY')); print(d.get('total_attempts',1))")" >> "$GITHUB_OUTPUT"
+            echo "goal_met=$(python3 -c "import json,sys; d=json.load(open('$SUMMARY')); print(str(d.get('goal_met',False)).lower())")" >> "$GITHUB_OUTPUT"
+          else
+            echo "aider_outcome=failure" >> "$GITHUB_OUTPUT"
+            echo "validate_outcome=failure" >> "$GITHUB_OUTPUT"
+            echo "qc_outcome=failure" >> "$GITHUB_OUTPUT"
+            echo "attempt=1" >> "$GITHUB_OUTPUT"
+            echo "goal_met=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Log result
         if: always()
@@ -390,10 +397,12 @@ jobs:
           python scripts/log_grinder_result.py \
             --prompt "$PROMPT_CONTENT" \
             --name "${{ steps.name.outputs.name }}" \
-            --aider "${{ steps.aider.outcome }}" \
-            --validate "${{ steps.validate.outcome }}" \
+            --aider "${{ steps.loop.outputs.aider_outcome || 'failure' }}" \
+            --validate "${{ steps.loop.outputs.validate_outcome || 'failure' }}" \
             --qc-result "output/${{ steps.name.outputs.name }}_qc_result.json" \
-            --priority "INDEPENDENT"
+            --priority "INDEPENDENT" \
+            --attempt "${{ steps.loop.outputs.attempt || '1' }}" \
+            --goal-met "${{ steps.loop.outputs.goal_met || 'false' }}"
 
       - name: Notify Slack — build result
         if: always()
@@ -405,15 +414,17 @@ jobs:
             echo "SLACK_WEBHOOK not set — skipping notification"
             exit 0
           fi
-          AIDER="${{ steps.aider.outcome }}"
-          VALIDATE="${{ steps.validate.outcome }}"
-          QC="${{ steps.qc.outcome }}"
+          AIDER="${{ steps.loop.outputs.aider_outcome || 'failure' }}"
+          VALIDATE="${{ steps.loop.outputs.validate_outcome || 'failure' }}"
+          QC="${{ steps.loop.outputs.qc_outcome || 'failure' }}"
+          GOAL="${{ steps.loop.outputs.goal_met || 'false' }}"
           if [ "$AIDER" = "success" ] && [ "$VALIDATE" = "success" ] && [ "$QC" = "success" ]; then
             ICON="✅"
           else
             ICON="❌"
           fi
-          MSG="${ICON} ${TITLE} — aider: ${VALIDATE} | validate: ${VALIDATE} | qc: ${QC}"
+          ATTEMPTS="${{ steps.loop.outputs.attempt || '1' }}"
+          MSG="${ICON} ${TITLE} — aider: ${AIDER} | validate: ${VALIDATE} | qc: ${QC} | attempts: ${ATTEMPTS} | goal_met: ${GOAL}"
           jq -n --arg text "$MSG" '{"text": $text}' | \
             curl -s -X POST "${SLACK_WEBHOOK}" \
               -H 'Content-type: application/json' \
@@ -427,6 +438,7 @@ jobs:
           path: |
             strategies/${{ steps.name.outputs.name }}.py
             output/${{ steps.name.outputs.name }}_qc_result.json
+            output/${{ steps.name.outputs.name }}_loop_summary.json
             output/grinder_results.jsonl
           if-no-files-found: ignore
 
@@ -435,6 +447,7 @@ jobs:
         run: |
           python scripts/check_qc_outcome.py \
             --result "output/${{ steps.name.outputs.name }}_qc_result.json"
+
 
   # ────────────────────────────────────────────────
   # Job 4: Conditional builds (sequential, check parent)

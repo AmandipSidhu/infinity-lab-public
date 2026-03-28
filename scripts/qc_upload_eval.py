@@ -39,26 +39,32 @@ Exit codes:
 #
 # ❌ read_backtests  — DOES NOT EXIST. Never call this. Will 404 every time.
 #
-# NODE-BUSY PATTERN:
-#   create_backtest returns success=False with errors[] containing "no spare nodes"
-#   when all compute nodes are busy. There is NO separate node-check endpoint.
-#   Retry must wrap create_backtest itself and inspect data.get("errors", []).
+# ⚠️  MCP BUG (quantconnect-mcp v0.3.5): create_backtest and read_backtest crash
+#    with KeyError(0) because they call backtest_results[0] on the QC dict response.
+#    WORKAROUND: _create_backtest() Step 3 and _poll_backtest() now use the REST API
+#    (_qc_post / _qc_get) instead of MCP tools for these two operations.
+#    compile_project and read_compilation_result are NOT affected — they still use MCP.
+#
+# NODE-BUSY PATTERN (REST):
+#   _qc_post("backtests/create", ...) raises RuntimeError containing "no spare nodes"
+#   when all compute nodes are busy. The retry loop in _create_backtest() catches this
+#   specific error and retries up to _BACKTEST_CREATE_RETRY_MAX times.
 #   Constants: _BACKTEST_CREATE_RETRY_MAX = 6, _BACKTEST_CREATE_RETRY_WAIT = 30s
 #
-# PROJECT TOOLS:
+# PROJECT TOOLS (still via MCP):
 #   create_project(name, language)      — may omit projectId on this account (known fallback)
 #   read_project(project_id=None)       — no args = list all; with project_id = single project
 #   compile_project(project_id)
 #   read_compilation_result(project_id, compile_id)
 #   delete_project(project_id)
 #
-# FILE TOOLS:
+# FILE TOOLS (still via MCP):
 #   create_file(project_id, name, content)
 #   read_file(project_id, name=None)    — no name = all files
 #   update_file_content(project_id, name, content)
 #   delete_file(project_id, name)
 #
-# AUTH TOOLS:
+# AUTH TOOLS (still via MCP):
 #   configure_quantconnect_auth(user_id, api_token)
 #   validate_quantconnect_auth()
 #   get_auth_status()
@@ -534,89 +540,65 @@ def _create_backtest(project_id: int, spec_name: str) -> str:
             f"{_COMPILE_POLL_MAX_ATTEMPTS * _COMPILE_POLL_INTERVAL_SECONDS} seconds"
         )
 
-    # Step 3: create backtest with node-busy retry
-    # create_backtest returns success=False + errors["no spare nodes"] when busy.
-    # Retry up to _BACKTEST_CREATE_RETRY_MAX times with _BACKTEST_CREATE_RETRY_WAIT sec delay.
-    last_errors: list[Any] = []
+    # Step 3: create backtest via REST API (bypasses broken MCP create_backtest tool which
+    # crashes with KeyError(0) because it calls backtest_results[0] on a dict response).
+    # Node-busy retry: QC REST returns errors=["no spare nodes"] when compute is busy.
+    # _qc_post raises RuntimeError with that message — catch and retry on it.
     for attempt in range(1, _BACKTEST_CREATE_RETRY_MAX + 1):
-        raw_resp = _mcp_tool_call(
-            "create_backtest",
-            {
-                "project_id": project_id,
-                "compile_id": compile_id,
-                "backtest_name": f"{spec_name}_backtest",
-            },
-        )
-        print(
-            f"[qc_upload_eval][DIAG] create_backtest raw response (attempt {attempt}): "
-            f"{json.dumps(raw_resp, default=_safe_serialize)}"
-        )
-        backtest_result = _parse_tool_json(raw_resp, "create_backtest")
-        print(
-            f"[qc_upload_eval][DIAG] create_backtest parsed result (attempt {attempt}): "
-            f"{json.dumps(backtest_result, default=_safe_serialize)}"
-        )
-
-        # Success path: tool returned status=success with a backtest object
-        if backtest_result.get("status") == "success":
-            backtest = backtest_result.get("backtest", {})
-            backtest_id = backtest.get("backtestId")
+        try:
+            body = _qc_post(
+                "backtests/create",
+                {
+                    "projectId": project_id,
+                    "compileId": compile_id,
+                    "backtestName": f"{spec_name}_backtest",
+                },
+            )
+        except RuntimeError as exc:
+            exc_str = str(exc).lower()
+            if "no spare nodes" in exc_str:
+                if attempt < _BACKTEST_CREATE_RETRY_MAX:
+                    print(
+                        f"[qc_upload_eval] create_backtest: no spare nodes "
+                        f"(attempt {attempt}/{_BACKTEST_CREATE_RETRY_MAX}), "
+                        f"retrying in {_BACKTEST_CREATE_RETRY_WAIT}s…"
+                    )
+                    time.sleep(_BACKTEST_CREATE_RETRY_WAIT)
+                    continue
+                raise RuntimeError(
+                    f"[qc_upload_eval] create_backtest: no spare nodes after "
+                    f"{_BACKTEST_CREATE_RETRY_MAX} attempts"
+                ) from exc
+            raise
+        else:
+            backtest_id: str | None = (body.get("backtest") or {}).get("backtestId")
             if not backtest_id:
                 raise RuntimeError(
-                    f"[qc_upload_eval] create_backtest returned success but no backtestId: "
-                    f"{backtest_result}"
+                    f"[qc_upload_eval] backtests/create did not return backtestId: {body}"
                 )
             return str(backtest_id)
 
-        # Error path: inspect errors[] for node-busy — only retry on that
-        last_errors = backtest_result.get("details", backtest_result.get("errors", []))
-        if _is_node_busy_error(last_errors):
-            if attempt < _BACKTEST_CREATE_RETRY_MAX:
-                print(
-                    f"[qc_upload_eval] create_backtest: no spare nodes "
-                    f"(attempt {attempt}/{_BACKTEST_CREATE_RETRY_MAX}), "
-                    f"retrying in {_BACKTEST_CREATE_RETRY_WAIT}s…"
-                )
-                time.sleep(_BACKTEST_CREATE_RETRY_WAIT)
-                continue
-            # Exhausted retries
-            raise RuntimeError(
-                f"[qc_upload_eval] create_backtest: no spare nodes after "
-                f"{_BACKTEST_CREATE_RETRY_MAX} attempts. Last errors: {last_errors}"
-            )
-
-        # Non-transient error — fail immediately
-        raise RuntimeError(
-            f"[qc_upload_eval] create_backtest failed (non-transient): "
-            f"{backtest_result.get('error') or last_errors}"
-        )
-
     # Should not be reachable but satisfies type checker
     raise RuntimeError(
-        f"[qc_upload_eval] create_backtest: exhausted retries. Last errors: {last_errors}"
+        f"[qc_upload_eval] create_backtest: exhausted {_BACKTEST_CREATE_RETRY_MAX} retries"
     )
 
 
 def _poll_backtest(project_id: int, backtest_id: str) -> dict[str, Any]:
-    """Poll MCP read_backtest until the backtest completes or timeout is reached.
+    """Poll backtests/read via REST until the backtest completes or timeout is reached.
 
-    Returns the raw ``backtest`` dict from the read_backtest response.
-    Raises ``RuntimeError`` on timeout or fatal server error.
+    Uses the QC REST API directly (via _qc_get) to bypass the broken MCP read_backtest
+    tool, which crashes with KeyError(0) because it calls backtest_results[0] on a dict.
+
+    Returns the raw ``backtest`` dict from the API response.
+    Raises ``RuntimeError`` on timeout or fatal API error.
     """
     for attempt in range(1, _POLL_MAX_ATTEMPTS + 1):
-        result = _parse_tool_json(
-            _mcp_tool_call(
-                "read_backtest",
-                {"project_id": project_id, "backtest_id": backtest_id},
-            ),
-            "read_backtest",
+        body = _qc_get(
+            "backtests/read",
+            {"projectId": project_id, "backtestId": backtest_id},
         )
-        if result.get("status") != "success":
-            raise RuntimeError(
-                f"[qc_upload_eval] read_backtest returned status={result.get('status')!r}: "
-                f"{result.get('error') or result}"
-            )
-        backtest: dict[str, Any] = result.get("backtest", {})
+        backtest: dict[str, Any] = body.get("backtest", {})
         progress: float = float(backtest.get("progress", backtest.get("Progress", 0.0)))
         completed: bool = bool(backtest.get("completed", backtest.get("Completed", False)))
         if completed or progress >= 1.0:
@@ -855,6 +837,33 @@ def upload_and_evaluate(
     sharpe_ratio = _extract_stat(
         backtest_result, "SharpeRatio", "sharpe_ratio", "Sharpe Ratio", "sharpe"
     )
+    max_drawdown = _extract_stat(
+        # QC statistics uses "Drawdown" as the primary key; "Max Drawdown" is a fallback
+        # alias used in some response formats.
+        backtest_result, "Drawdown", "Max Drawdown", "max_drawdown", "MaxDrawdown"
+    )
+    net_profit = _extract_stat(
+        backtest_result, "Net Profit", "net_profit", "netProfit", "NetProfit"
+    )
+    annual_return = _extract_stat(
+        backtest_result,
+        "Compounding Annual Return",
+        "annual_return",
+        "annualReturn",
+        "AnnualReturn",
+    )
+    total_trades_stat = _extract_stat(
+        backtest_result,
+        "Total Trades",
+        "total_trades",
+        "TotalTrades",
+        "Total Orders",
+        "TotalOrders",
+    )
+    # Prefer statistics-derived trade count; fall back to read_backtest_orders result
+    effective_trades: int = (
+        int(total_trades_stat) if total_trades_stat is not None else total_orders
+    )
 
     passed = len(violations) == 0
     return {
@@ -863,8 +872,14 @@ def upload_and_evaluate(
         "project_id": project_id,
         "backtest_id": backtest_id,
         "sharpe_ratio": sharpe_ratio,
+        "sharpe": sharpe_ratio,
         "total_orders": total_orders,
+        "total_trades": effective_trades,
+        "max_drawdown": max_drawdown,
+        "net_profit": net_profit,
+        "annual_return": annual_return,
         "result": "PASS" if passed else "FAIL",
+        "status": "success" if passed else "fail",
         "passed": passed,
         "violation_count": len(violations),
         "violations": violations,

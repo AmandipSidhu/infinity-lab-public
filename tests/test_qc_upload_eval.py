@@ -461,35 +461,102 @@ class TestWaitForCompile:
                 _wait_for_compile(42, "abc123")  # should not raise
                 assert mock_time.sleep.call_count == 2  # slept twice before success
 
-    def test_create_backtest_uses_mcp_tools(self) -> None:
-        """_create_backtest calls MCP compile_project, read_compilation_result, create_backtest tools."""
+    def test_create_backtest_uses_mcp_for_compile_and_rest_for_backtest(self) -> None:
+        """_create_backtest uses MCP for compile steps and REST for backtests/create."""
         compile_resp = {"result": {"content": [{"type": "text", "text": json.dumps({
             "status": "success", "compile_id": "compile-xyz", "state": "BuildSuccess",
         })}]}}
         read_compile_resp = {"result": {"content": [{"type": "text", "text": json.dumps({
             "status": "success", "state": "BuildSuccess",
         })}]}}
-        create_bt_resp = {"result": {"content": [{"type": "text", "text": json.dumps({
-            "status": "success",
-            "backtest": {"backtestId": "bt-abc"},
-        })}]}}
+        rest_resp = {"success": True, "backtest": {"backtestId": "bt-abc"}}
 
-        call_responses = {
-            "compile_project": compile_resp,
-            "read_compilation_result": read_compile_resp,
-            "create_backtest": create_bt_resp,
-        }
+        mcp_calls: list[str] = []
+        rest_calls: list[str] = []
 
-        with patch.object(qc_upload_eval, "_mcp_tool_call",
-                          side_effect=lambda name, args, req_id=1: call_responses[name]):
-            backtest_id = _create_backtest(99, "my_spec")
+        def fake_mcp(name: str, args: dict, req_id: int = 1) -> dict:
+            mcp_calls.append(name)
+            if name == "compile_project":
+                return compile_resp
+            if name == "read_compilation_result":
+                return read_compile_resp
+            raise ValueError(f"unexpected MCP tool call: {name}")
+
+        def fake_post(endpoint: str, payload: dict) -> dict:
+            rest_calls.append(endpoint)
+            return rest_resp
+
+        with patch.object(qc_upload_eval, "_mcp_tool_call", side_effect=fake_mcp):
+            with patch.object(qc_upload_eval, "_qc_post", side_effect=fake_post):
+                backtest_id = _create_backtest(99, "my_spec")
 
         assert backtest_id == "bt-abc"
+        assert "compile_project" in mcp_calls
+        assert "read_compilation_result" in mcp_calls
+        assert "backtests/create" in rest_calls
+        assert "create_backtest" not in mcp_calls  # MCP create_backtest no longer used
 
 
 # ---------------------------------------------------------------------------
 # TestWaitForFreeNode
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# TestPollBacktest — REST-based poll
+# ---------------------------------------------------------------------------
+
+
+class TestPollBacktest:
+    def test_returns_backtest_when_completed(self) -> None:
+        """_poll_backtest returns the backtest dict when completed=True."""
+        completed_bt = {"backtestId": "bt1", "completed": True, "progress": 1.0,
+                        "statistics": {"Sharpe Ratio": "1.5"}}
+        body = {"success": True, "backtest": completed_bt}
+        with patch.object(qc_upload_eval, "_qc_get", return_value=body):
+            result = _poll_backtest(42, "bt1")
+        assert result["backtestId"] == "bt1"
+        assert result["completed"] is True
+
+    def test_polls_until_completed(self) -> None:
+        """_poll_backtest retries when progress < 1.0, returns on completion."""
+        in_progress = {"backtestId": "bt2", "completed": False, "progress": 0.5}
+        done = {"backtestId": "bt2", "completed": True, "progress": 1.0,
+                "statistics": {"Sharpe Ratio": "2.0"}}
+        responses = [
+            {"success": True, "backtest": in_progress},
+            {"success": True, "backtest": done},
+        ]
+        with patch.object(qc_upload_eval, "_qc_get", side_effect=responses):
+            with patch.object(qc_upload_eval, "time") as mock_time:
+                mock_time.sleep = MagicMock()
+                result = _poll_backtest(42, "bt2")
+        assert result["completed"] is True
+        assert mock_time.sleep.call_count == 1
+
+    def test_raises_on_timeout(self) -> None:
+        """_poll_backtest raises RuntimeError when max attempts exhausted."""
+        in_progress = {"backtestId": "bt3", "completed": False, "progress": 0.3}
+        body = {"success": True, "backtest": in_progress}
+        with patch.object(qc_upload_eval, "_qc_get", return_value=body):
+            with patch.object(qc_upload_eval, "_POLL_MAX_ATTEMPTS", 2):
+                with patch.object(qc_upload_eval, "time") as mock_time:
+                    mock_time.sleep = MagicMock()
+                    with pytest.raises(RuntimeError, match="did not complete"):
+                        _poll_backtest(42, "bt3")
+
+    def test_uses_rest_not_mcp(self) -> None:
+        """_poll_backtest must use _qc_get (REST), never _mcp_tool_call."""
+        completed_bt = {"backtestId": "bt4", "completed": True, "progress": 1.0}
+        body = {"success": True, "backtest": completed_bt}
+        mcp_called: list[str] = []
+        with patch.object(qc_upload_eval, "_qc_get", return_value=body):
+            with patch.object(
+                qc_upload_eval, "_mcp_tool_call",
+                side_effect=lambda *a, **kw: mcp_called.append(str(a)) or {}
+            ):
+                _poll_backtest(42, "bt4")
+        assert not mcp_called, "read_backtest should use REST, not MCP"
+
 
 # ---------------------------------------------------------------------------
 # MCP envelope helper
@@ -507,24 +574,29 @@ def _mcp_ok(data: dict) -> dict:
 
 
 def test_create_backtest_retries_on_node_busy(monkeypatch):
-    """create_backtest must retry on 'no spare nodes' and succeed on attempt 2."""
+    """create_backtest must retry when REST backtests/create returns 'no spare nodes'."""
     import scripts.qc_upload_eval as mod
 
     call_count = {"n": 0}
 
-    def fake(name, arguments, req_id=1):
+    def fake_mcp(name, arguments, req_id=1):
         if name == "compile_project":
             return _mcp_ok({"compile_id": "cmp_001", "state": "BuildSuccess"})
         if name == "read_compilation_result":
             return _mcp_ok({"state": "BuildSuccess"})
-        if name == "create_backtest":
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                return _mcp_ok({"status": "error", "details": ["no spare nodes available"]})
-            return _mcp_ok({"status": "success", "backtest": {"backtestId": "bt_abc"}})
-        raise ValueError(f"unexpected: {name}")
+        raise ValueError(f"unexpected MCP call: {name}")
 
-    monkeypatch.setattr(mod, "_mcp_tool_call", fake)
+    def fake_post(endpoint, payload):
+        assert endpoint == "backtests/create"
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError(
+                "QC REST API returned error for 'backtests/create': ['no spare nodes available']"
+            )
+        return {"success": True, "backtest": {"backtestId": "bt_abc"}}
+
+    monkeypatch.setattr(mod, "_mcp_tool_call", fake_mcp)
+    monkeypatch.setattr(mod, "_qc_post", fake_post)
     monkeypatch.setattr(mod, "_BACKTEST_CREATE_RETRY_WAIT", 0)
     result = mod._create_backtest(project_id=1, spec_name="s")
     assert result == "bt_abc"
@@ -532,19 +604,23 @@ def test_create_backtest_retries_on_node_busy(monkeypatch):
 
 
 def test_create_backtest_raises_after_max_retries(monkeypatch):
-    """create_backtest must raise RuntimeError after exhausting all retries."""
+    """create_backtest must raise RuntimeError after exhausting all REST retries."""
     import scripts.qc_upload_eval as mod
 
-    def fake(name, arguments, req_id=1):
+    def fake_mcp(name, arguments, req_id=1):
         if name == "compile_project":
             return _mcp_ok({"compile_id": "cmp_001", "state": "BuildSuccess"})
         if name == "read_compilation_result":
             return _mcp_ok({"state": "BuildSuccess"})
-        if name == "create_backtest":
-            return _mcp_ok({"status": "error", "details": ["no spare nodes"]})
-        raise ValueError(f"unexpected: {name}")
+        raise ValueError(f"unexpected MCP call: {name}")
 
-    monkeypatch.setattr(mod, "_mcp_tool_call", fake)
+    def fake_post(endpoint, payload):
+        raise RuntimeError(
+            "QC REST API returned error for 'backtests/create': ['no spare nodes']"
+        )
+
+    monkeypatch.setattr(mod, "_mcp_tool_call", fake_mcp)
+    monkeypatch.setattr(mod, "_qc_post", fake_post)
     monkeypatch.setattr(mod, "_BACKTEST_CREATE_RETRY_WAIT", 0)
     with pytest.raises(RuntimeError, match="no spare nodes"):
         mod._create_backtest(project_id=1, spec_name="s")
