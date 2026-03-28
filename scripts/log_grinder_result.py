@@ -139,6 +139,17 @@ def main() -> None:
         default="output/grinder_results.jsonl",
         help="Path to output JSONL file",
     )
+    parser.add_argument(
+        "--attempt",
+        type=int,
+        default=1,
+        help="Attempt number within the grinder retry loop (default: 1)",
+    )
+    parser.add_argument(
+        "--goal-met",
+        default="false",
+        help="Whether the quality goal was met: true | false (default: false)",
+    )
     args = parser.parse_args()
 
     qc_metrics = parse_qc_result(args.qc_result)
@@ -151,6 +162,8 @@ def main() -> None:
         "strategy_name": args.name,
         "priority": args.priority,
         "parent": args.parent,
+        "attempt": args.attempt,
+        "goal_met": args.goal_met.lower() == "true",
         "aider_success": args.aider == "success",
         "aider_tier": "gemini-flash",
         "syntax_valid": args.validate == "success",
